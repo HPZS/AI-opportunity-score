@@ -103,6 +103,7 @@ function getToolIcon(name: string): string {
     analyze_opportunity: "📊",
     push_result: "📤",
     agent: "🤖",
+    skill: "🧠",
   };
   return icons[name] || "🔨";
 }
@@ -125,6 +126,8 @@ function getToolSummary(name: string, input: Record<string, any>): string {
       return input.endpoint || "";
     case "agent":
       return `[${input.type || "analysis"}] ${input.description || ""}`;
+    case "skill":
+      return input.skill_name || "";
     default:
       return "";
   }

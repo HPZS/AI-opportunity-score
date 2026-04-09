@@ -8,6 +8,7 @@ import type { PermissionMode } from "./tools.js";
 import { getEnvVar, loadEnvFile } from "./env.js";
 import { saveTaskResult } from "./storage.js";
 import { buildTaskFailureMessage, runTaskWithSupervisor } from "./task-runner.js";
+import { runScreeningSelfImprovementReview } from "./self-improvement.js";
 
 loadEnvFile();
 
@@ -269,6 +270,30 @@ async function main() {
         tokens: result.tokens,
       });
       printInfo(`任务结果已保存到 ${saved.filePath}`);
+
+      try {
+        const review = await runScreeningSelfImprovementReview(agent, {
+          taskType: canonicalTaskType,
+          model,
+          prompt,
+          taskMessage,
+          assistantText: result.text,
+          attemptCount,
+          validation,
+          taskResultFilePath: saved.filePath,
+        });
+        if (review) {
+          printInfo(`持续改进复盘已保存到 ${review.filePath}`);
+          if (review.runtimeOverridesFilePath) {
+            printInfo(`运行时自修复规则已更新到 ${review.runtimeOverridesFilePath}`);
+          }
+          if (review.activatedRuntimeGuards && review.activatedRuntimeGuards.length > 0) {
+            printInfo(`当前启用的自修复规则: ${review.activatedRuntimeGuards.join(" | ")}`);
+          }
+        }
+      } catch (error: any) {
+        printInfo(`持续改进复盘生成失败，已跳过: ${error.message}`);
+      }
 
       const failureMessage = buildTaskFailureMessage(validation);
       if (failureMessage) {

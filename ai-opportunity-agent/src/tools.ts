@@ -12,6 +12,7 @@ import {
   type ScenarioRule,
 } from "./config/signal-config.js";
 import { getEnvVar, loadEnvFile } from "./env.js";
+import { loadRuntimeOverrides } from "./self-healing.js";
 
 loadEnvFile();
 
@@ -104,6 +105,7 @@ export const toolDefinitions: ToolDef[] = [
         summary: { type: "string", description: "摘要" },
         content: { type: "string", description: "正文内容" },
         publish_time: { type: "string", description: "已知发布时间，可选" },
+        publish_time_raw: { type: "string", description: "已知发布时间原始文本，可选" },
         publish_time_confidence: { type: "number", description: "发布时间可信度，可选" },
         is_pdf: { type: "boolean", description: "是否为 PDF 抓取结果，可选" },
       },
@@ -119,8 +121,10 @@ export const toolDefinitions: ToolDef[] = [
         title: { type: "string", description: "线索标题" },
         summary: { type: "string", description: "线索摘要" },
         content: { type: "string", description: "线索正文" },
+        url: { type: "string", description: "线索原始链接，可选" },
         source_domain: { type: "string", description: "来源域名" },
         publish_time: { type: "string", description: "发布时间 ISO 字符串" },
+        publish_time_raw: { type: "string", description: "发布时间原始文本，可选" },
         publish_time_confidence: { type: "number", description: "发布时间可信度，可选" },
         is_pdf: { type: "boolean", description: "是否为 PDF 抓取结果，可选" },
       },
@@ -168,8 +172,10 @@ export const toolDefinitions: ToolDef[] = [
         title: { type: "string", description: "线索标题" },
         summary: { type: "string", description: "线索摘要" },
         content: { type: "string", description: "线索正文" },
+        url: { type: "string", description: "线索原始链接，可选" },
         source_domain: { type: "string", description: "来源域名，可选" },
         publish_time: { type: "string", description: "发布时间 ISO 字符串，可选" },
+        publish_time_raw: { type: "string", description: "发布时间原始文本，可选" },
         publish_time_confidence: { type: "number", description: "发布时间可信度，可选" },
         is_pdf: { type: "boolean", description: "是否为 PDF 抓取结果，可选" },
         deep_analysis_score: { type: "number", description: "深查得分，可选" },
@@ -341,6 +347,161 @@ function detectSourceLevel(sourceDomain: string): string {
   return "C";
 }
 
+function containsAnyKeyword(text: string, keywords: string[]): boolean {
+  const lower = text.toLowerCase();
+  return keywords.some((keyword) => lower.includes(keyword.toLowerCase()));
+}
+
+const HOTLINE_ANCHOR_KEYWORDS = ["12345", "便民热线", "热线", "接诉即办", "市民服务热线", "热线平台"];
+const HOTLINE_OPPORTUNITY_KEYWORDS = [
+  "智能",
+  "智能化",
+  "升级",
+  "改造",
+  "采购",
+  "招标",
+  "公告",
+  "项目",
+  "预算",
+  "采购意向",
+  "需求征集",
+  "知识库",
+  "质检",
+  "派单",
+  "坐席",
+  "回访",
+  "大模型",
+  "ai",
+  "运维",
+  "运行维护",
+];
+const HOTLINE_TITLE_BRIDGE_KEYWORDS = [
+  "采购",
+  "招标",
+  "公告",
+  "预算",
+  "预算公开",
+  "采购意向",
+  "需求征集",
+  "实施方案",
+  "建设方案",
+  "建设",
+  "升级",
+  "改造",
+  "运维",
+  "平台",
+];
+const HOTLINE_GENERIC_PORTAL_PATTERNS = [
+  /12345政务服务便民热线$/u,
+  /12345热线$/u,
+  /政务服务便民热线$/u,
+];
+const BUDGET_DOCUMENT_KEYWORDS = [
+  "预算公开",
+  "单位预算公开",
+  "部门预算公开",
+  "部门预算",
+  "单位预算",
+  "政府采购支出表",
+  "项目支出绩效目标表",
+  "项目支出预算",
+  "预算绩效目标",
+  "预算表",
+];
+const FORMAL_ADVANCE_SIGNAL_KEYWORDS = [
+  "采购意向",
+  "需求征集",
+  "招标公告",
+  "采购公告",
+  "竞争性磋商",
+  "公开招标",
+  "比选公告",
+  "单一来源",
+  "立项批复",
+  "可研批复",
+];
+const EXECUTION_TASK_SIGNAL_KEYWORDS = [
+  "建设任务",
+  "重点任务",
+  "场景建设",
+  "能力建设",
+  "系统优化升级项目",
+  "升级项目建设",
+  "平台建设",
+  "知识库一体化",
+  "热线百科",
+  "问答台",
+  "智能客服",
+  "智能数据分析",
+  "智能座席",
+  "自动派单",
+  "知识库推荐",
+  "智能回访",
+  "智能质检",
+  "事件预警",
+];
+
+function isHotlineFocusedSearch(query: string, subscriptionId: string | null | undefined): boolean {
+  if (subscriptionId === "hotline_upgrade") return true;
+  return containsAnyKeyword(query, HOTLINE_ANCHOR_KEYWORDS);
+}
+
+function containsBudgetDocumentSignal(text: string): boolean {
+  return containsAnyKeyword(text, BUDGET_DOCUMENT_KEYWORDS);
+}
+
+function containsFormalAdvanceSignal(text: string): boolean {
+  return containsAnyKeyword(text, FORMAL_ADVANCE_SIGNAL_KEYWORDS);
+}
+
+function containsExecutionTaskSignal(text: string): boolean {
+  return containsAnyKeyword(text, EXECUTION_TASK_SIGNAL_KEYWORDS);
+}
+
+function isHotlineRelevantSearchResult(title: string, snippet: string, url: string): boolean {
+  const normalizedSnippet = normalizeWhitespace(snippet);
+  const combined = normalizeWhitespace(`${title} ${normalizedSnippet} ${url}`);
+  const normalizedTitle = normalizeWhitespace(title);
+  const titleHasAnchor = containsAnyKeyword(normalizedTitle, HOTLINE_ANCHOR_KEYWORDS);
+  const snippetHasAnchor = containsAnyKeyword(normalizedSnippet, HOTLINE_ANCHOR_KEYWORDS);
+  const hasOpportunityIntent = containsAnyKeyword(combined, HOTLINE_OPPORTUNITY_KEYWORDS);
+  const titleHasBridgeIntent = containsAnyKeyword(normalizedTitle, HOTLINE_TITLE_BRIDGE_KEYWORDS);
+  const isGenericPortalPage = HOTLINE_GENERIC_PORTAL_PATTERNS.some((pattern) => pattern.test(normalizedTitle));
+
+  if (!titleHasAnchor && !(snippetHasAnchor && titleHasBridgeIntent)) return false;
+  if (isGenericPortalPage && !hasOpportunityIntent) return false;
+  return hasOpportunityIntent;
+}
+
+function isAllowedBySourceProfiles(domain: string, sourceProfileIds: string[]): boolean {
+  if (!domain) return false;
+  const lowerDomain = domain.toLowerCase();
+  const allowGovernment = sourceProfileIds.includes("government_portals") || sourceProfileIds.includes("official_mixed");
+  const allowProcurement = sourceProfileIds.includes("procurement_portals") || sourceProfileIds.includes("official_mixed");
+  const allowTrading = sourceProfileIds.includes("trading_platforms") || sourceProfileIds.includes("official_mixed");
+
+  if (allowGovernment && lowerDomain.endsWith(".gov.cn")) return true;
+  if (allowProcurement && lowerDomain.includes("ccgp")) return true;
+  if (allowTrading && lowerDomain.includes("ggzy")) return true;
+
+  return sourceProfileIds.length === 0;
+}
+
+function isAllowedUrlBySourceProfiles(url: string, sourceProfileIds: string[]): boolean {
+  const lowerUrl = url.toLowerCase();
+  if (!lowerUrl) return sourceProfileIds.length === 0;
+
+  const allowGovernment = sourceProfileIds.includes("government_portals") || sourceProfileIds.includes("official_mixed");
+  const allowProcurement = sourceProfileIds.includes("procurement_portals") || sourceProfileIds.includes("official_mixed");
+  const allowTrading = sourceProfileIds.includes("trading_platforms") || sourceProfileIds.includes("official_mixed");
+
+  if (allowGovernment && lowerUrl.includes(".gov.cn")) return true;
+  if (allowProcurement && lowerUrl.includes("ccgp")) return true;
+  if (allowTrading && lowerUrl.includes("ggzy")) return true;
+
+  return sourceProfileIds.length === 0;
+}
+
 function extractPublishTime(text: string): { raw: string | null; normalized: string | null; confidence: number } {
   const patterns = [
     /\b(20\d{2}[-/年](?:0?[1-9]|1[0-2])[-/月](?:0?[1-9]|[12]\d|3[01])(?:日)?(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?)\b/,
@@ -363,7 +524,13 @@ function extractPublishTime(text: string): { raw: string | null; normalized: str
 }
 
 function normalizeDate(raw: string): string | null {
-  const normalized = raw
+  const trimmed = raw.trim();
+  const directDate = new Date(trimmed);
+  if (!Number.isNaN(directDate.getTime())) {
+    return directDate.toISOString();
+  }
+
+  const normalized = trimmed
     .replace(/年|\/|\./g, "-")
     .replace(/月/g, "-")
     .replace(/日/g, "")
@@ -382,6 +549,7 @@ function resolveWeakPublishCandidate(raw: string | null | undefined): string | n
 function resolvePublishInfo(input: {
   text: string;
   explicitPublishTime?: string | null;
+  explicitPublishTimeRaw?: string | null;
   explicitPublishTimeConfidence?: number | null;
   isPdf?: boolean;
 }): {
@@ -392,14 +560,16 @@ function resolvePublishInfo(input: {
 } {
   const inferred = extractPublishTime(input.text);
   const explicitRaw = safeString(input.explicitPublishTime);
+  const explicitPublishTimeRaw = safeString(input.explicitPublishTimeRaw);
   const explicitNormalized = explicitRaw ? normalizeDate(explicitRaw) || explicitRaw : null;
   const explicitConfidence = safeNumber(input.explicitPublishTimeConfidence);
   const trustedExplicitConfidence = explicitConfidence ?? (explicitNormalized ? 0.9 : 0);
+  const preferredRaw = explicitRaw || explicitPublishTimeRaw || inferred.raw;
 
   if (input.isPdf) {
     if (explicitNormalized && trustedExplicitConfidence >= 0.85) {
       return {
-        raw: explicitRaw || inferred.raw,
+        raw: preferredRaw,
         normalized: explicitNormalized,
         confidence: trustedExplicitConfidence,
         source: "explicit",
@@ -407,10 +577,10 @@ function resolvePublishInfo(input: {
     }
 
     return {
-      raw: explicitRaw || inferred.raw,
+      raw: preferredRaw,
       normalized: null,
       confidence: Math.min(Math.max(trustedExplicitConfidence || inferred.confidence || 0.25, 0.25), 0.35),
-      source: inferred.normalized || explicitNormalized ? "pdf_body_unverified" : "unknown",
+      source: preferredRaw ? "pdf_body_unverified" : "unknown",
     };
   }
 
@@ -424,7 +594,7 @@ function resolvePublishInfo(input: {
   }
 
   return {
-    raw: inferred.raw,
+    raw: preferredRaw,
     normalized: inferred.normalized,
     confidence: inferred.confidence,
     source: inferred.normalized ? "body" : "unknown",
@@ -538,6 +708,7 @@ function classifyLead(input: {
   stage: OpportunityStage;
   sourceType: string;
   publishTime: string | null;
+  weakPublishAgeDays: number | null;
   text: string;
 }): {
   leadCategory: LeadCategory;
@@ -546,7 +717,11 @@ function classifyLead(input: {
 } {
   const ageDays = getAgeDays(input.publishTime);
   const isStale = ageDays !== null && ageDays > 180;
+  const isWeakOutdated = input.weakPublishAgeDays !== null && input.weakPublishAgeDays > 45;
+  const isWeakHistorical = input.weakPublishAgeDays !== null && input.weakPublishAgeDays > 180;
   const lower = input.text.toLowerCase();
+  const isBudgetDocument = containsBudgetDocumentSignal(input.text);
+  const hasFormalAdvanceSignal = containsFormalAdvanceSignal(input.text);
   const hasCurrentOpportunitySignal =
     [
       "采购意向",
@@ -558,6 +733,7 @@ function classifyLead(input: {
       "立项",
       "可行性研究",
       "建设方案",
+      "实施方案",
       "升级改造",
       "智能化升级",
       "扩容升级",
@@ -575,6 +751,26 @@ function classifyLead(input: {
       "实施方案",
       "能力建设",
     ].some((keyword) => lower.includes(keyword.toLowerCase()));
+  const hasExecutionTaskSignal =
+    containsExecutionTaskSignal(input.text) ||
+    [
+      "实施方案",
+      "建设任务",
+      "重点任务",
+      "场景建设",
+      "能力建设",
+      "智能客服",
+      "智能数据分析",
+      "智能座席",
+      "自动派单",
+      "知识库推荐",
+      "智能回访",
+      "智能质检",
+    ].some((keyword) => lower.includes(keyword.toLowerCase()));
+  const hasBudgetOpportunitySignal =
+    isBudgetDocument &&
+    hasExecutionTaskSignal &&
+    ["项目", "建设", "升级", "改造", "系统", "平台"].some((keyword) => lower.includes(keyword.toLowerCase()));
 
   if (["中标后", "合同签订", "已落地"].includes(input.stage)) {
     return {
@@ -584,7 +780,39 @@ function classifyLead(input: {
     };
   }
 
-  if (!isStale && (input.stage === "招标中" || input.stage === "规划信号")) {
+  if ((input.stage === "招标中" || input.stage === "规划信号") && (isStale || isWeakHistorical || isWeakOutdated)) {
+    return {
+      leadCategory: "historical_case",
+      isActionableNow: false,
+      categoryReason: "该线索缺少权威发布时间，且正文候选日期明显早于当前时间窗，暂按历史/待核验参考处理。",
+    };
+  }
+
+  if (isBudgetDocument) {
+    if (!isStale && !isWeakOutdated && hasExecutionTaskSignal && hasFormalAdvanceSignal) {
+      return {
+        leadCategory: "current_opportunity",
+        isActionableNow: true,
+        categoryReason: "该线索属于预算/预算支出类文件，但已出现独立采购、需求征集或立项推进信号，可作为前置机会继续跟进。",
+      };
+    }
+
+    if (!isStale && !isWeakOutdated && hasBudgetOpportunitySignal) {
+      return {
+        leadCategory: "current_opportunity",
+        isActionableNow: false,
+        categoryReason: "该线索属于预算公开/预算支出类文件，虽已出现升级项目和建设内容，但尚缺少独立采购或立项公告，宜作为前置机会观察，不直接按成熟商机推进。",
+      };
+    }
+
+    return {
+      leadCategory: "policy_signal",
+      isActionableNow: false,
+      categoryReason: "该线索属于预算公开/预算支出类文件，更多体现预算与建设方向，暂不足以作为当前可推进商机。",
+    };
+  }
+
+  if (!isStale && !isWeakOutdated && (input.stage === "招标中" || input.stage === "规划信号")) {
     return {
       leadCategory: "current_opportunity",
       isActionableNow: true,
@@ -593,11 +821,11 @@ function classifyLead(input: {
   }
 
   if (input.stage === "政策信号" || input.sourceType === "政策类") {
-    if (!isStale && hasCurrentOpportunitySignal) {
+    if (!isStale && !isWeakOutdated && (hasCurrentOpportunitySignal || (hasDirectionalBuildSignal && hasExecutionTaskSignal))) {
       return {
         leadCategory: "current_opportunity",
         isActionableNow: true,
-        categoryReason: "该线索虽来自政策/政府动态来源，但正文已出现明确采购、立项或升级改造信号，可视为当前机会线索。",
+        categoryReason: "该线索虽来自政策/政府动态来源，但正文已出现明确采购、建设任务或升级改造执行信号，可视为当前机会线索。",
       };
     }
     return {
@@ -759,8 +987,10 @@ function evaluateOpportunity(input: {
   title?: string;
   summary?: string;
   content: string;
+  url?: string;
   sourceDomain?: string;
   publishTime?: string | null;
+  publishTimeRaw?: string | null;
   publishTimeConfidence?: number | null;
   isPdf?: boolean;
   deepAnalysisScore?: number;
@@ -768,13 +998,16 @@ function evaluateOpportunity(input: {
   const title = safeString(input.title);
   const summary = safeString(input.summary);
   const content = safeString(input.content);
+  const url = safeString(input.url);
   const text = normalizeWhitespace(`${title} ${summary} ${content}`);
   const sourceDomain = safeString(input.sourceDomain);
   const sourceType = detectSourceType(sourceDomain, text);
   const sourceLevel = detectSourceLevel(sourceDomain);
+  const runtimeOverrides = loadRuntimeOverrides();
   const publishInfo = resolvePublishInfo({
     text,
     explicitPublishTime: input.publishTime,
+    explicitPublishTimeRaw: input.publishTimeRaw,
     explicitPublishTimeConfidence: input.publishTimeConfidence ?? null,
     isPdf: input.isPdf,
   });
@@ -789,12 +1022,15 @@ function evaluateOpportunity(input: {
   const deepScore = typeof input.deepAnalysisScore === "number" ? input.deepAnalysisScore : 0;
   const baseScore = Number((aiFitScore * 0.4 + maturityScore * 0.4 + deepScore * 0.2).toFixed(1));
   const lower = text.toLowerCase();
+  const isBudgetDocument = containsBudgetDocumentSignal(text);
+  const hasFormalAdvanceSignal = containsFormalAdvanceSignal(text);
   const hasProcurementSignal = MATURITY_SIGNALS.high.filter((keyword) => lower.includes(keyword.toLowerCase())).length >= 2;
   const opportunityStage = detectOpportunityStage(normalizeWhitespace(`${title} ${summary}`), text, sourceType);
   const lead = classifyLead({
     stage: opportunityStage,
     sourceType,
     publishTime,
+    weakPublishAgeDays,
     text,
   });
   const opportunityScore = scoreOpportunity({
@@ -813,15 +1049,36 @@ function evaluateOpportunity(input: {
     stage: opportunityStage,
     leadCategory: lead.leadCategory,
   });
-  const totalScore = lead.leadCategory === "current_opportunity" ? opportunityScore : referenceValueScore;
+  let leadCategory = lead.leadCategory;
+  let isActionableNow = lead.isActionableNow;
+  let categoryReason = lead.categoryReason;
+  const selfHealingFlags: string[] = [];
+  const urlDate = extractDateFromUrl(url);
+  const urlDateAgeDays = getAgeDays(urlDate);
+
+  if (
+    runtimeOverrides.poolGuards.disallowPlanningStageActionableByDefault &&
+    opportunityStage === "规划信号" &&
+    isActionableNow &&
+    !hasFormalAdvanceSignal
+  ) {
+    leadCategory = "policy_signal";
+    isActionableNow = false;
+    categoryReason = "系统自修复拦截：该线索仅表现为规划信号，且缺少采购、立项、需求征集或招标执行信号，暂不按当前可跟进机会处理。";
+    selfHealingFlags.push("planning_stage_requires_execution_signal");
+  }
+
+  let totalScore = leadCategory === "current_opportunity" ? opportunityScore : referenceValueScore;
   const passesWeakTimeGate =
     publishTime !== null ||
     weakPublishAgeDays === null ||
     weakPublishAgeDays <= 45;
-  const shouldEnterPool =
-    lead.leadCategory === "current_opportunity" &&
-    lead.isActionableNow &&
+  const budgetDocumentPoolEligible = !isBudgetDocument || (hasFormalAdvanceSignal && publishTime !== null);
+  let shouldEnterPool =
+    leadCategory === "current_opportunity" &&
+    isActionableNow &&
     passesWeakTimeGate &&
+    budgetDocumentPoolEligible &&
     (
       opportunityScore >= 60 ||
       (sourceLevel === "A" && opportunityStage === "招标中" && hasProcurementSignal && budgetSignals.length > 0) ||
@@ -829,13 +1086,61 @@ function evaluateOpportunity(input: {
       (aiFitScore >= 68 && maturityScore >= 48)
     );
 
+  if (
+    runtimeOverrides.poolGuards.requireResolvedProjectTitleForCurrentOpportunity &&
+    leadCategory === "current_opportunity" &&
+    isPlaceholderOpportunityTitle(title)
+  ) {
+    shouldEnterPool = false;
+    selfHealingFlags.push("placeholder_title_requires_resolution");
+  }
+
+  if (
+    runtimeOverrides.poolGuards.requireAuthorityPublishTimeForPoolEntry &&
+    shouldEnterPool &&
+    publishInfo.source === "pdf_body_unverified"
+  ) {
+    shouldEnterPool = false;
+    leadCategory = "policy_signal";
+    isActionableNow = false;
+    categoryReason = "系统自修复拦截：该线索仅有 PDF 正文候选日期，缺少权威公告页发布时间，暂不允许进入当前机会池。";
+    selfHealingFlags.push("unverified_pdf_publish_time_blocked");
+  }
+
+  if (
+    runtimeOverrides.poolGuards.blockOldPdfWithoutAuthorityPage &&
+    input.isPdf &&
+    shouldEnterPool &&
+    urlDateAgeDays !== null &&
+    urlDateAgeDays > 45 &&
+    publishInfo.source !== "explicit"
+  ) {
+    shouldEnterPool = false;
+    leadCategory = "historical_case";
+    isActionableNow = false;
+    categoryReason = "系统自修复拦截：PDF 链接路径日期明显早于当前时间窗，且缺少权威公告页发布时间，暂按历史/待核验线索处理。";
+    selfHealingFlags.push("old_pdf_without_authority_page_blocked");
+  }
+
+  totalScore = leadCategory === "current_opportunity" ? opportunityScore : referenceValueScore;
+
+  const followUpAction = shouldEnterPool
+    ? (opportunityScore >= 70 ? "建议进入候选机会池并优先跟进" : "建议进入候选机会池并持续观察")
+    : (selfHealingFlags.includes("placeholder_title_requires_resolution")
+      ? "建议补充正式项目名称后再判断"
+      : selfHealingFlags.includes("unverified_pdf_publish_time_blocked")
+        ? "建议先补抓权威公告页发布时间后再判断"
+        : selfHealingFlags.includes("old_pdf_without_authority_page_blocked")
+          ? "建议转为历史/待核验参考，不作为当前商机推进"
+          : buildSuggestedAction(opportunityScore));
+
   return {
     sourceType,
     sourceLevel,
-    leadCategory: lead.leadCategory,
+    leadCategory,
     opportunityStage,
-    isActionableNow: lead.isActionableNow,
-    categoryReason: lead.categoryReason,
+    isActionableNow,
+    categoryReason,
     scenarioTags: scenarios.tags,
     scenarioConfidence: Number(Math.min(0.98, 0.45 + scenarios.tags.length * 0.12).toFixed(2)),
     aiFitScore,
@@ -858,20 +1163,56 @@ function evaluateOpportunity(input: {
       budgetSignals,
     }),
     suggestedAction: buildCategorySuggestion({
-      leadCategory: lead.leadCategory,
-      isActionableNow: lead.isActionableNow,
+      leadCategory,
+      isActionableNow,
       opportunityStage,
       opportunityScore,
       referenceValueScore,
     }),
-    followUpAction: buildSuggestedAction(opportunityScore),
+    followUpAction,
     modelConfidence: Number(Math.min(0.95, 0.5 + scenarios.tags.length * 0.08).toFixed(2)),
     publishTime,
     publishTimeRaw: publishInfo.raw,
     publishTimeConfidence: publishInfo.confidence,
     publishTimeSource: publishInfo.source,
     recommendedTechnologies: scenarios.technologies,
+    selfHealingFlags,
+    runtimeGuardVersion: runtimeOverrides.version,
   };
+}
+
+function isPlaceholderOpportunityTitle(value: string): boolean {
+  const title = normalizeWhitespace(value);
+  if (!title) return true;
+  return (
+    /^项目编号[:：]?/u.test(title) ||
+    /^[一二三四五六七八九十]+[、，.．]/u.test(title) ||
+    /^(采购需求|招标文件|附件)$/u.test(title)
+  );
+}
+
+function extractDateFromUrl(url: string): string | null {
+  if (!url) return null;
+
+  const slashMatch = url.match(/\/(20\d{2})\/(\d{1,2})\/(\d{1,2})(?:\/|$)/u);
+  if (slashMatch) {
+    const [, year, month, day] = slashMatch;
+    return buildIsoDate(year, month, day);
+  }
+
+  const compactMatch = url.match(/(20\d{2})[-_](\d{1,2})[-_](\d{1,2})/u);
+  if (compactMatch) {
+    const [, year, month, day] = compactMatch;
+    return buildIsoDate(year, month, day);
+  }
+
+  return null;
+}
+
+function buildIsoDate(year: string, month: string, day: string): string | null {
+  const iso = `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}T00:00:00.000Z`;
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
 function summarizeEvidence(items: string[], fallback: string): string {
@@ -985,6 +1326,8 @@ async function searchWeb(input: Record<string, unknown>): Promise<string> {
 
   const data = await response.json() as JsonObject;
   const results = Array.isArray(data.results) ? data.results : [];
+  const shouldFilterHotline = isHotlineFocusedSearch(query, subscription?.id || null);
+  const shouldFilterBySourceProfile = builtQuery.resolvedProfileIds.length > 0;
   const normalized = results.map((item) => {
     const row = (item ?? {}) as JsonObject;
     const title = safeString(row.title);
@@ -1002,7 +1345,15 @@ async function searchWeb(input: Record<string, unknown>): Promise<string> {
       domain: deriveDomain(safeString(row.url)),
       within_time_window: withinWindow,
     };
-  }).filter((item) => item.within_time_window !== false);
+  }).filter((item) => item.within_time_window !== false)
+    .filter((item) =>
+      !shouldFilterBySourceProfile ||
+      (
+        isAllowedUrlBySourceProfiles(item.url, builtQuery.resolvedProfileIds) &&
+        isAllowedBySourceProfiles(item.domain, builtQuery.resolvedProfileIds)
+      )
+    )
+    .filter((item) => !shouldFilterHotline || isHotlineRelevantSearchResult(item.title, item.content, item.url));
 
   return JSON.stringify(
     {
@@ -1080,6 +1431,7 @@ function extractSignal(input: Record<string, unknown>): string {
   const publishInfo = resolvePublishInfo({
     text,
     explicitPublishTime: safeString(input.publish_time) || null,
+    explicitPublishTimeRaw: safeString(input.publish_time_raw) || null,
     explicitPublishTimeConfidence: safeNumber(input.publish_time_confidence),
     isPdf,
   });
@@ -1090,6 +1442,7 @@ function extractSignal(input: Record<string, unknown>): string {
     stage: opportunityStage,
     sourceType,
     publishTime: publishInfo.normalized,
+    weakPublishAgeDays: getAgeDays(publishInfo.normalized || resolveWeakPublishCandidate(publishInfo.raw)),
     text,
   });
 
@@ -1163,8 +1516,10 @@ function analyzeOpportunity(input: Record<string, unknown>): string {
     title: safeString(input.title),
     summary: safeString(input.summary),
     content: safeString(input.content),
+    url: safeString(input.url),
     sourceDomain: safeString(input.source_domain),
     publishTime: safeString(input.publish_time) || null,
+    publishTimeRaw: safeString(input.publish_time_raw) || null,
     publishTimeConfidence: safeNumber(input.publish_time_confidence),
     isPdf: input.is_pdf === true,
     deepAnalysisScore,
@@ -1203,8 +1558,10 @@ function screenOpportunity(input: Record<string, unknown>): string {
     title: safeString(input.title),
     summary: safeString(input.summary),
     content: safeString(input.content),
+    url: safeString(input.url),
     sourceDomain: safeString(input.source_domain),
     publishTime: safeString(input.publish_time) || null,
+    publishTimeRaw: safeString(input.publish_time_raw) || null,
     publishTimeConfidence: safeNumber(input.publish_time_confidence),
     isPdf: input.is_pdf === true,
   });

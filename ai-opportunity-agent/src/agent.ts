@@ -20,6 +20,7 @@ import {
 import { saveSession } from "./session.js";
 import { buildSystemPrompt } from "./prompt.js";
 import { getSubAgentConfig, type SubAgentType } from "./subagent.js";
+import { discoverSkills, getAdvertisableSkills, getSkillByName } from "./skills.js";
 import * as readline from "readline";
 import { randomUUID } from "crypto";
 import { existsSync, readFileSync, mkdirSync } from "fs";
@@ -107,6 +108,51 @@ function toOpenAITools(tools: ToolDef[]): OpenAI.ChatCompletionTool[] {
       parameters: t.input_schema as Record<string, unknown>,
     },
   }));
+}
+
+const SKILL_TOOL_DEFINITION: ToolDef = {
+  name: "skill",
+  description: "调用项目或用户级技能，执行标准化工作流、复盘分析或经验沉淀。",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      skill_name: { type: "string", description: "技能名称" },
+      args: { type: "string", description: "传给技能的任务参数或上下文" },
+    },
+    required: ["skill_name"],
+  },
+};
+
+function buildRuntimeTools(baseTools: ToolDef[], includeSkillTool: boolean): ToolDef[] {
+  const tools = [...baseTools];
+  if (includeSkillTool && getAdvertisableSkills().length > 0 && !tools.some((tool) => tool.name === "skill")) {
+    tools.push(SKILL_TOOL_DEFINITION);
+  }
+  return tools;
+}
+
+export interface ToolExecutionTraceEntry {
+  backend: "openai" | "anthropic";
+  name: string;
+  input: Record<string, any>;
+  result: string;
+  toolCallId?: string;
+}
+
+function createOpenAICompatibleFetch(): typeof fetch {
+  return async (input, init) => {
+    const headers = new Headers(init?.headers || {});
+    for (const key of Array.from(headers.keys())) {
+      const lowerKey = key.toLowerCase();
+      if (lowerKey === "user-agent" || lowerKey.startsWith("x-stainless-")) {
+        headers.delete(key);
+      }
+    }
+    return fetch(input, {
+      ...init,
+      headers,
+    });
+  };
 }
 
 function isEmptyOpenAIMessage(message?: {
@@ -223,7 +269,7 @@ export class Agent {
     this.configuredOpenAIBase = options.apiBase;
     this.configuredAnthropicBase = options.anthropicBaseURL;
     this.isSubAgent = options.isSubAgent || false;
-    this.tools = options.customTools || toolDefinitions;
+    this.tools = buildRuntimeTools(options.customTools || toolDefinitions, !this.isSubAgent);
     this.maxCostUsd = options.maxCostUsd;
     this.maxTurns = options.maxTurns;
     this.confirmFn = options.confirmFn;
@@ -244,6 +290,7 @@ export class Agent {
       this.openaiClient = new OpenAI({
         baseURL: options.apiBase,
         apiKey: options.apiKey,
+        fetch: createOpenAICompatibleFetch(),
       });
       this.openaiMessages.push({ role: "system", content: this.systemPrompt });
     } else {
@@ -348,6 +395,116 @@ export class Agent {
         output: this.totalOutputTokens - prevOutput,
       },
     };
+  }
+
+  async runSkillOnce(
+    skillName: string,
+    args: string
+  ): Promise<{ text: string; tokens: { input: number; output: number } }> {
+    const { executeSkill } = await import("./skills.js");
+    const result = executeSkill(skillName, args);
+    if (!result) {
+      throw new Error(`Unknown skill: ${skillName}`);
+    }
+
+    if (result.context === "fork") {
+      const tools = result.allowedTools
+        ? this.tools.filter((tool) => result.allowedTools!.includes(tool.name))
+        : this.tools.filter((tool) => tool.name !== "agent" && tool.name !== "skill");
+
+      const subAgent = new Agent({
+        model: this.model,
+        apiKey: this.configuredApiKey,
+        apiBase: this.useOpenAI ? this.configuredOpenAIBase : undefined,
+        anthropicBaseURL: this.useOpenAI ? undefined : this.configuredAnthropicBase,
+        customSystemPrompt: result.prompt,
+        customTools: tools,
+        isSubAgent: true,
+        permissionMode: this.permissionMode === "plan" ? "plan" : "bypassPermissions",
+        maxCostUsd: this.maxCostUsd,
+        maxTurns: this.maxTurns,
+      });
+
+      const subResult = await subAgent.runOnce(args || "Execute this skill task.");
+      this.totalInputTokens += subResult.tokens.input;
+      this.totalOutputTokens += subResult.tokens.output;
+      return subResult;
+    }
+
+    const inlineAgent = new Agent({
+      model: this.model,
+      apiKey: this.configuredApiKey,
+      apiBase: this.useOpenAI ? this.configuredOpenAIBase : undefined,
+      anthropicBaseURL: this.useOpenAI ? undefined : this.configuredAnthropicBase,
+      customSystemPrompt: `${this.baseSystemPrompt}\n\n${result.prompt}`,
+      customTools: this.tools.filter((tool) => tool.name !== "agent" && tool.name !== "skill"),
+      isSubAgent: true,
+      permissionMode: this.permissionMode === "plan" ? "plan" : "bypassPermissions",
+      maxCostUsd: this.maxCostUsd,
+      maxTurns: this.maxTurns,
+    });
+
+    const inlineResult = await inlineAgent.runOnce(args || "Execute this skill task.");
+    this.totalInputTokens += inlineResult.tokens.input;
+    this.totalOutputTokens += inlineResult.tokens.output;
+    return inlineResult;
+  }
+
+  exportToolExecutionTrace(): ToolExecutionTraceEntry[] {
+    const placeholderValues = new Set([SNIP_PLACEHOLDER, "[Old result cleared]"]);
+
+    if (this.useOpenAI) {
+      const openAiCalls = new Map<string, { name: string; input: Record<string, any> }>();
+      for (const message of this.openaiMessages) {
+        const msg = message as any;
+        if (msg.role !== "assistant" || !Array.isArray(msg.tool_calls)) continue;
+        for (const toolCall of msg.tool_calls) {
+          if (toolCall?.type !== "function") continue;
+          let input: Record<string, any> = {};
+          try {
+            input = JSON.parse(toolCall.function?.arguments || "{}");
+          } catch {}
+          openAiCalls.set(toolCall.id, {
+            name: toolCall.function?.name || "unknown",
+            input,
+          });
+        }
+      }
+
+      const trace: ToolExecutionTraceEntry[] = [];
+      for (const message of this.openaiMessages) {
+        const msg = message as any;
+        if (msg.role !== "tool" || typeof msg.content !== "string" || placeholderValues.has(msg.content)) continue;
+        const toolCall = openAiCalls.get(msg.tool_call_id);
+        if (!toolCall) continue;
+        trace.push({
+          backend: "openai",
+          name: toolCall.name,
+          input: toolCall.input,
+          result: msg.content,
+          toolCallId: msg.tool_call_id,
+        });
+      }
+      return trace;
+    }
+
+    const trace: ToolExecutionTraceEntry[] = [];
+    for (const message of this.anthropicMessages) {
+      if (message.role !== "user" || !Array.isArray(message.content)) continue;
+      for (const block of message.content as any[]) {
+        if (block.type !== "tool_result" || typeof block.content !== "string" || placeholderValues.has(block.content)) continue;
+        const toolUse = this.findToolUseById(block.tool_use_id);
+        if (!toolUse) continue;
+        trace.push({
+          backend: "anthropic",
+          name: toolUse.name,
+          input: toolUse.input,
+          result: block.content,
+          toolCallId: block.tool_use_id,
+        });
+      }
+    }
+    return trace;
   }
 
   // ─── Output helper (captures if sub-agent) ────────────────
@@ -709,6 +866,10 @@ export class Agent {
 
   private async executeSkillTool(input: Record<string, any>): Promise<string> {
     const { executeSkill } = await import("./skills.js");
+    const skill = getSkillByName(input.skill_name);
+    if (skill?.postTaskOnly) {
+      return `Skill "${input.skill_name}" is reserved for post-task review and cannot be invoked during the main agent run.`;
+    }
     const result = executeSkill(input.skill_name, input.args || "");
     if (!result) return `Unknown skill: ${input.skill_name}`;
 
@@ -716,7 +877,7 @@ export class Agent {
       // Fork mode: run in isolated sub-agent
       const tools = result.allowedTools
         ? this.tools.filter(t => result.allowedTools!.includes(t.name))
-        : this.tools.filter(t => t.name !== "agent");
+        : this.tools.filter(t => t.name !== "agent" && t.name !== "skill");
 
       printSubAgentStart("skill-fork", input.skill_name);
       const subAgent = new Agent({

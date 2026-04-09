@@ -238,7 +238,7 @@ export const KEYWORD_SUBSCRIPTIONS: KeywordSubscription[] = [
     id: "hotline_upgrade",
     label: "政务热线智能化",
     description: "12345 热线、热线平台、智能客服、工单分派等相关订阅。",
-    keywords: ["12345", "热线", "热线平台", "智能化", "智能客服", "工单智能分派", "语音识别", "知识库", "大模型"],
+    keywords: ["12345政务服务便民热线", "热线平台升级", "智能客服", "智能质检", "智能派单", "知识库", "采购意向", "运行维护"],
     preferredSourceProfileIds: ["official_mixed"],
   },
   {

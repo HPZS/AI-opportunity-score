@@ -91,7 +91,10 @@ export function buildScreeningTaskOutputRequirements(config: ScreeningTaskConfig
     "15. 来自政府官网或政策来源的线索，如果正文已出现明确采购、立项、建设方案、升级改造等执行信号，可以保留为 currentOpportunities，不要一律降为 policySignals。\n" +
     "16. 每条线索尽量保留 leadCategory、opportunityStage、isActionableNow、scoreBreakdown、categoryReason。\n" +
     "17. 如果 publishTime 为空，但 PDF 正文候选日期明显早于当前时间窗，该线索可以保留为待核验参考，但不得直接 shouldEnterPool=true。\n" +
-    "18. 输出结构优先参考以下模板：\n" +
+    "18. 对同一条线索，优先先调用 extract_signal，再把 extract_signal 返回的 publishTime、publishTimeRaw、publishTimeConfidence、normalizedTitle 继续传给 screen_opportunity 和最终结果，不要丢字段。\n" +
+    "19. 如果标题只是“项目编号”“一、服务项目背景”“采购需求”“招标文件”等占位标题，不得直接作为最终商机标题或直接入池，必须优先补正式项目名称。\n" +
+    "20. 对“预算公开/部门预算/单位预算/政府采购支出表”类文件，如缺少独立采购公告、采购意向、需求征集或立项批复，不得 shouldEnterPool=true；可保留为待观察线索或 policySignals。\n" +
+    "21. 输出结构优先参考以下模板：\n" +
     "```json\n" +
     SCREENING_RESULT_TEMPLATE +
     "\n```"

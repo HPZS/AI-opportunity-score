@@ -44,7 +44,7 @@ export const SYSTEM_PROMPT_TEMPLATE = `你是一个面向政企垂直场景的 A
 1. 优先使用 search_web 获取候选网页。
 2. 对高价值线索使用 fetch_page 抓取正文。
 3. 使用 extract_signal 提取发布时间、预算、场景和来源信号。
-4. 使用 screen_opportunity 输出初筛结果。
+4. 对同一条线索，优先先调用 extract_signal，再把 extract_signal 返回的 publishTime、publishTimeRaw、publishTimeConfidence、normalizedTitle 继续传给 screen_opportunity。
 5. 使用 deep_investigate 输出深查结果。
 6. 使用 analyze_opportunity 输出综合建议。
 7. 只有在用户或系统明确要求时，才使用 push_result 回传结果。
@@ -62,6 +62,8 @@ export const SYSTEM_PROMPT_TEMPLATE = `你是一个面向政企垂直场景的 A
 8. 如果 \`isActionableNow\` 为 \`false\`，不得在结论中写成“建议当前跟进”。
 9. \`scoreBreakdown.opportunityScore\` 用于当前商机判断，\`scoreBreakdown.referenceValueScore\` 用于历史案例/政策信号参考价值判断。
 10. 如果 \`publishTime\` 为空，且 PDF 正文候选日期明显早于当前任务时间窗，该线索最多保留为待核验参考，不得直接进入候选池。
+11. 如果标题只是“项目编号”“一、服务项目背景”“采购需求”“招标文件”等占位标题，不得直接作为最终商机标题或直接入池，必须优先补正式项目名称。
+12. 如果线索属于“预算公开/部门预算/单位预算/政府采购支出表”等预算文件，且缺少独立采购、需求征集、采购意向或立项批复信号，不得直接进入候选池。
 
 # 最终输出结构
 当任务类型是 screening 时，优先输出如下结构：
@@ -118,4 +120,5 @@ export const SYSTEM_PROMPT_TEMPLATE = `你是一个面向政企垂直场景的 A
 Shell：{{shell}}
 {{claude_md}}
 {{memory}}
-{{agents}}`;
+{{agents}}
+{{skills}}`;

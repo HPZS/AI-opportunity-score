@@ -4,6 +4,7 @@ import * as os from "os";
 import { SYSTEM_PROMPT_TEMPLATE } from "./config/prompt-config.js";
 import { buildMemoryPromptSection } from "./memory.js";
 import { buildAgentDescriptions } from "./subagent.js";
+import { buildSkillDescriptions } from "./skills.js";
 
 function loadClaudeMd(): string {
   const parts: string[] = [];
@@ -33,6 +34,7 @@ export function buildSystemPrompt(): string {
   const claudeMd = loadClaudeMd();
   const memorySection = buildMemoryPromptSection();
   const agentSection = buildAgentDescriptions();
+  const skillSection = buildSkillDescriptions();
 
   return SYSTEM_PROMPT_TEMPLATE
     .split("{{cwd}}").join(process.cwd())
@@ -41,5 +43,6 @@ export function buildSystemPrompt(): string {
     .split("{{shell}}").join(shell)
     .split("{{claude_md}}").join(claudeMd)
     .split("{{memory}}").join(memorySection)
-    .split("{{agents}}").join(agentSection);
+    .split("{{agents}}").join(agentSection)
+    .split("{{skills}}").join(skillSection);
 }
