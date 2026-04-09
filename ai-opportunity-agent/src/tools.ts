@@ -440,6 +440,35 @@ const EXECUTION_TASK_SIGNAL_KEYWORDS = [
   "智能质检",
   "事件预警",
 ];
+const GOVERNMENT_REPORT_NOISE_KEYWORDS = [
+  "工作动态",
+  "媒体聚焦",
+  "经验做法",
+  "典型案例",
+  "样板",
+  "观察",
+  "如何做好",
+  "开启新",
+  "日报",
+  "爱济南",
+  "总客服",
+  "成效",
+  "做法",
+  "专题报道",
+];
+const GENERIC_SEARCH_RESULT_TITLE_PATTERNS = [
+  /^一[、，.．]/u,
+  /^二[、，.．]/u,
+  /^三[、，.．]/u,
+  /^附件$/u,
+  /^采购需求$/u,
+  /^招标文件$/u,
+  /^项目概况$/u,
+  /^湖北省政府采购$/u,
+  /^\d{4}\s*年度$/u,
+  /^合同中的下列术语应解释为[:：]?$/u,
+];
+const OUTDATED_YEAR_MARGIN = 1;
 
 function isHotlineFocusedSearch(query: string, subscriptionId: string | null | undefined): boolean {
   if (subscriptionId === "hotline_upgrade") return true;
@@ -468,9 +497,200 @@ function isHotlineRelevantSearchResult(title: string, snippet: string, url: stri
   const titleHasBridgeIntent = containsAnyKeyword(normalizedTitle, HOTLINE_TITLE_BRIDGE_KEYWORDS);
   const isGenericPortalPage = HOTLINE_GENERIC_PORTAL_PATTERNS.some((pattern) => pattern.test(normalizedTitle));
 
-  if (!titleHasAnchor && !(snippetHasAnchor && titleHasBridgeIntent)) return false;
+  if (!titleHasAnchor && !(snippetHasAnchor && (titleHasBridgeIntent || hasOpportunityIntent))) return false;
   if (isGenericPortalPage && !hasOpportunityIntent) return false;
   return hasOpportunityIntent;
+}
+
+function isGovernmentPortalDomain(domain: string): boolean {
+  const lowerDomain = domain.toLowerCase();
+  return lowerDomain.endsWith(".gov.cn") && !lowerDomain.includes("ccgp") && !lowerDomain.includes("ggzy");
+}
+
+function isProcurementOrTradingDomain(domain: string): boolean {
+  const lowerDomain = domain.toLowerCase();
+  return lowerDomain.includes("ccgp") || lowerDomain.includes("ggzy");
+}
+
+function hasSearchExecutionSignal(title: string, snippet: string, url: string): boolean {
+  const combined = normalizeWhitespace(`${title} ${snippet} ${url}`);
+  return (
+    containsAnyKeyword(combined, FORMAL_ADVANCE_SIGNAL_KEYWORDS) ||
+    containsAnyKeyword(combined, EXECUTION_TASK_SIGNAL_KEYWORDS) ||
+    containsAnyKeyword(combined, HOTLINE_TITLE_BRIDGE_KEYWORDS) ||
+    containsAnyKeyword(combined, HOTLINE_OPPORTUNITY_KEYWORDS)
+  );
+}
+
+function isGovernmentReportNoise(title: string, snippet: string): boolean {
+  const combined = normalizeWhitespace(`${title} ${snippet}`);
+  return containsAnyKeyword(combined, GOVERNMENT_REPORT_NOISE_KEYWORDS);
+}
+
+function isGenericSearchResultTitle(title: string): boolean {
+  const normalizedTitle = normalizeWhitespace(title);
+  if (!normalizedTitle) return true;
+  return GENERIC_SEARCH_RESULT_TITLE_PATTERNS.some((pattern) => pattern.test(normalizedTitle));
+}
+
+function hasHotlineAnchorInUrl(url: string): boolean {
+  return containsAnyKeyword(url, HOTLINE_ANCHOR_KEYWORDS);
+}
+
+function extractYearMonthFromUrl(url: string): string | null {
+  if (!url) return null;
+  const compactYearMonth = url.match(/(?:\/|_)(20\d{2})(0[1-9]|1[0-2])(?:\/|[_-]|$)/u);
+  if (compactYearMonth) {
+    const [, year, month] = compactYearMonth;
+    return buildIsoDate(year, month, "01");
+  }
+
+  const slashYearMonth = url.match(/\/(20\d{2})\/(\d{1,2})(?:\/|$)/u);
+  if (slashYearMonth) {
+    const [, year, month] = slashYearMonth;
+    return buildIsoDate(year, month, "01");
+  }
+
+  return null;
+}
+
+function extractYearFromUrl(url: string): string | null {
+  if (!url) return null;
+  const yearMatch = url.match(/(?:\/|_|-)(20\d{2})(?:\/|_|-|$)/u);
+  if (!yearMatch) return null;
+  const [, year] = yearMatch;
+  return buildIsoDate(year, "01", "01");
+}
+
+function extractCoarseDateSignal(text: string): string | null {
+  const normalized = normalizeWhitespace(text);
+  if (!normalized) return null;
+
+  const fullDate = extractPublishTime(normalized).normalized;
+  if (fullDate) return fullDate;
+
+  const yearMonthMatch = normalized.match(/\b(20\d{2})[-年/.](0?[1-9]|1[0-2])(?:月)?\b/u);
+  if (yearMonthMatch) {
+    const [, year, month] = yearMonthMatch;
+    return buildIsoDate(year, month, "01");
+  }
+
+  const yearMatch = normalized.match(/\b(20\d{2})年?\b/u);
+  if (yearMatch) {
+    const [, year] = yearMatch;
+    return buildIsoDate(year, "01", "01");
+  }
+
+  return null;
+}
+
+function isClearlyOutdatedSignal(dateText: string | null, inferredDays: number | null): boolean {
+  if (!dateText || !inferredDays) return false;
+  const date = new Date(dateText);
+  if (Number.isNaN(date.getTime())) return false;
+  const now = new Date();
+  const ageDays = (now.getTime() - date.getTime()) / (24 * 60 * 60 * 1000);
+  return ageDays > inferredDays + 30;
+}
+
+function evaluateHotlineSearchResult(input: {
+  title: string;
+  snippet: string;
+  url: string;
+  domain: string;
+  publishedDate: string;
+  sourceProfileIds: string[];
+  hotlineFocused: boolean;
+  inferredDays: number | null;
+}): { keep: boolean; reason: string } {
+  const { title, snippet, url, domain, publishedDate, sourceProfileIds, hotlineFocused, inferredDays } = input;
+  if (hotlineFocused && !isHotlineRelevantSearchResult(title, snippet, url)) {
+    return { keep: false, reason: "not_hotline_relevant" };
+  }
+
+  const hasExecutionSignal = hasSearchExecutionSignal(title, snippet, url);
+  const isGovPortal = isGovernmentPortalDomain(domain);
+  const isProcurementLike = isProcurementOrTradingDomain(domain);
+  const isPdf = isPdfUrl(url);
+  const titleOrUrlHasHotlineAnchor =
+    containsAnyKeyword(title, HOTLINE_ANCHOR_KEYWORDS) || hasHotlineAnchorInUrl(url);
+  const snippetHasHotlineAnchor = containsAnyKeyword(snippet, HOTLINE_ANCHOR_KEYWORDS);
+  const urlDate = extractDateFromUrl(url) || extractYearMonthFromUrl(url) || extractYearFromUrl(url);
+  const coarseDateSignal = extractCoarseDateSignal(`${title} ${snippet}`) || urlDate;
+  const titleIsGeneric = isGenericSearchResultTitle(title);
+
+  if (
+    hotlineFocused &&
+    !titleOrUrlHasHotlineAnchor &&
+    !(isProcurementLike && snippetHasHotlineAnchor && containsFormalAdvanceSignal(`${title} ${snippet}`))
+  ) {
+    return { keep: false, reason: "missing_hotline_anchor" };
+  }
+
+  if (isGovPortal && isGovernmentReportNoise(title, snippet) && !hasExecutionSignal) {
+    return { keep: false, reason: "government_report_noise" };
+  }
+
+  if (isGovPortal && sourceProfileIds.includes("government_portals") && !hasExecutionSignal) {
+    return { keep: false, reason: "government_portal_without_execution_signal" };
+  }
+
+  if (
+    isGovPortal &&
+    titleOrUrlHasHotlineAnchor &&
+    containsFormalAdvanceSignal(`${title} ${snippet}`) &&
+    !publishedDate &&
+    !coarseDateSignal &&
+    inferredDays
+  ) {
+    return { keep: true, reason: "keep_government_pending_date_verification" };
+  }
+
+  if (titleIsGeneric && !hasHotlineAnchorInUrl(url) && !containsAnyKeyword(title, HOTLINE_ANCHOR_KEYWORDS)) {
+    return { keep: false, reason: "generic_title_without_anchor" };
+  }
+
+  if (isProcurementLike && titleOrUrlHasHotlineAnchor && containsFormalAdvanceSignal(`${title} ${snippet}`)) {
+    if (!publishedDate && !coarseDateSignal && inferredDays) {
+      return { keep: true, reason: "keep_procurement_pending_date_verification" };
+    }
+    return { keep: true, reason: "keep_procurement_like" };
+  }
+
+  if (
+    isProcurementLike &&
+    snippetHasHotlineAnchor &&
+    containsFormalAdvanceSignal(`${title} ${snippet}`) &&
+    !publishedDate &&
+    !coarseDateSignal &&
+    inferredDays
+  ) {
+    return { keep: true, reason: "keep_procurement_snippet_pending_date_verification" };
+  }
+
+  if (containsBudgetDocumentSignal(`${title} ${snippet}`) && !containsFormalAdvanceSignal(`${title} ${snippet}`)) {
+    return { keep: false, reason: "budget_without_formal_signal" };
+  }
+
+  if (inferredDays && !publishedDate && !coarseDateSignal) {
+    return { keep: false, reason: "missing_date_signal" };
+  }
+
+  if (!publishedDate && isClearlyOutdatedSignal(coarseDateSignal, inferredDays)) {
+    return { keep: false, reason: "clearly_outdated" };
+  }
+
+  if (
+    isPdf &&
+    inferredDays &&
+    urlDate &&
+    !publishedDate &&
+    !isWithinDays(urlDate, inferredDays)
+  ) {
+    return { keep: false, reason: "pdf_url_date_out_of_window" };
+  }
+
+  return { keep: true, reason: "keep_default" };
 }
 
 function isAllowedBySourceProfiles(domain: string, sourceProfileIds: string[]): boolean {
@@ -500,6 +720,15 @@ function isAllowedUrlBySourceProfiles(url: string, sourceProfileIds: string[]): 
   if (allowTrading && lowerUrl.includes("ggzy")) return true;
 
   return sourceProfileIds.length === 0;
+}
+
+function shouldUseExplicitIncludeDomains(sourceProfileIds: string[]): boolean {
+  const hasGovernmentLikeProfile =
+    sourceProfileIds.includes("government_portals") ||
+    sourceProfileIds.includes("policy_documents") ||
+    sourceProfileIds.includes("official_mixed");
+
+  return !hasGovernmentLikeProfile;
 }
 
 function extractPublishTime(text: string): { raw: string | null; normalized: string | null; confidence: number } {
@@ -1055,6 +1284,7 @@ function evaluateOpportunity(input: {
   const selfHealingFlags: string[] = [];
   const urlDate = extractDateFromUrl(url);
   const urlDateAgeDays = getAgeDays(urlDate);
+  const isListingPage = isListingLikeOpportunityPage(title, url, content);
 
   if (
     runtimeOverrides.poolGuards.disallowPlanningStageActionableByDefault &&
@@ -1095,6 +1325,11 @@ function evaluateOpportunity(input: {
     selfHealingFlags.push("placeholder_title_requires_resolution");
   }
 
+  if (leadCategory === "current_opportunity" && isListingPage) {
+    shouldEnterPool = false;
+    selfHealingFlags.push("listing_page_blocked");
+  }
+
   if (
     runtimeOverrides.poolGuards.requireAuthorityPublishTimeForPoolEntry &&
     shouldEnterPool &&
@@ -1128,6 +1363,8 @@ function evaluateOpportunity(input: {
     ? (opportunityScore >= 70 ? "建议进入候选机会池并优先跟进" : "建议进入候选机会池并持续观察")
     : (selfHealingFlags.includes("placeholder_title_requires_resolution")
       ? "建议补充正式项目名称后再判断"
+      : selfHealingFlags.includes("listing_page_blocked")
+        ? "建议下钻具体公告详情页后再判断"
       : selfHealingFlags.includes("unverified_pdf_publish_time_blocked")
         ? "建议先补抓权威公告页发布时间后再判断"
         : selfHealingFlags.includes("old_pdf_without_authority_page_blocked")
@@ -1187,12 +1424,48 @@ function isPlaceholderOpportunityTitle(value: string): boolean {
   return (
     /^项目编号[:：]?/u.test(title) ||
     /^[一二三四五六七八九十]+[、，.．]/u.test(title) ||
-    /^(采购需求|招标文件|附件)$/u.test(title)
+    /^(采购需求|招标文件|附件)$/u.test(title) ||
+    /^(公开招标公告|邀请招标公告|竞争性磋商公告|询价公告|终止公告|更正公告|中标公告|成交公告)_中国政府采购网$/u.test(title)
   );
+}
+
+function isListingLikeOpportunityPage(title: string, url: string, content: string): boolean {
+  const normalizedTitle = normalizeWhitespace(title);
+  const normalizedUrl = url.toLowerCase();
+  const normalizedContent = normalizeWhitespace(content);
+
+  if (
+    /^(公开招标公告|邀请招标公告|竞争性磋商公告|询价公告|终止公告|更正公告|中标公告|成交公告)_中国政府采购网$/u.test(normalizedTitle)
+  ) {
+    return true;
+  }
+
+  if (
+    /\/index(?:_\d+)?\.htm$/u.test(normalizedUrl) ||
+    /\/cggg\/[^?#]+\/$/u.test(normalizedUrl)
+  ) {
+    return true;
+  }
+
+  if (
+    normalizedContent.includes("下一页") &&
+    normalizedContent.includes("上一页") &&
+    normalizedContent.includes("中国政府采购网")
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 function extractDateFromUrl(url: string): string | null {
   if (!url) return null;
+
+  const compactSlashMatch = url.match(/\/(20\d{2})(0[1-9]|1[0-2])\/(\d{1,2})(?:\/|$)/u);
+  if (compactSlashMatch) {
+    const [, year, month, day] = compactSlashMatch;
+    return buildIsoDate(year, month, day);
+  }
 
   const slashMatch = url.match(/\/(20\d{2})\/(\d{1,2})\/(\d{1,2})(?:\/|$)/u);
   if (slashMatch) {
@@ -1299,7 +1572,9 @@ async function searchWeb(input: Record<string, unknown>): Promise<string> {
   const subscription = subscriptionId ? getKeywordSubscription(subscriptionId) : undefined;
   const explicitIncludeDomains = safeStringArray(input.include_domains);
   const explicitExcludeDomains = safeStringArray(input.exclude_domains);
-  const includeDomains = mergeStringArrays(mergedProfiles.includeDomains, explicitIncludeDomains);
+  const includeDomains = shouldUseExplicitIncludeDomains(sourceProfileIds)
+    ? mergeStringArrays(mergedProfiles.includeDomains, explicitIncludeDomains)
+    : explicitIncludeDomains;
   const excludeDomains = mergeStringArrays(mergedProfiles.excludeDomains, explicitExcludeDomains);
   const body = {
     api_key: apiKey,
@@ -1328,32 +1603,65 @@ async function searchWeb(input: Record<string, unknown>): Promise<string> {
   const results = Array.isArray(data.results) ? data.results : [];
   const shouldFilterHotline = isHotlineFocusedSearch(query, subscription?.id || null);
   const shouldFilterBySourceProfile = builtQuery.resolvedProfileIds.length > 0;
-  const normalized = results.map((item) => {
+  const normalizedResults = results.map((item) => {
     const row = (item ?? {}) as JsonObject;
     const title = safeString(row.title);
     const snippet = safeString(row.content);
     const publishedDate = safeString(row.published_date);
+    const url = normalizeUrl(safeString(row.url));
+    const urlDate = extractDateFromUrl(url) || extractYearMonthFromUrl(url) || extractYearFromUrl(url);
     const inferredPublish = publishedDate
       ? publishedDate
-      : extractPublishTime(`${title} ${snippet}`).normalized;
+      : extractPublishTime(`${title} ${snippet}`).normalized || urlDate;
     const withinWindow = inferredDays ? isWithinDays(inferredPublish || publishedDate, inferredDays) : null;
     return {
       title,
-      url: normalizeUrl(safeString(row.url)),
+      url,
       content: truncateText(snippet, 800),
       published_date: inferredPublish || publishedDate,
-      domain: deriveDomain(safeString(row.url)),
+      domain: deriveDomain(url),
       within_time_window: withinWindow,
     };
-  }).filter((item) => item.within_time_window !== false)
-    .filter((item) =>
-      !shouldFilterBySourceProfile ||
-      (
-        isAllowedUrlBySourceProfiles(item.url, builtQuery.resolvedProfileIds) &&
-        isAllowedBySourceProfiles(item.domain, builtQuery.resolvedProfileIds)
-      )
+  });
+  const withinWindowResults = normalizedResults.filter((item) => item.within_time_window !== false);
+  const sourceProfileResults = withinWindowResults.filter((item) =>
+    !shouldFilterBySourceProfile ||
+    (
+      isAllowedUrlBySourceProfiles(item.url, builtQuery.resolvedProfileIds) &&
+      isAllowedBySourceProfiles(item.domain, builtQuery.resolvedProfileIds)
     )
-    .filter((item) => !shouldFilterHotline || isHotlineRelevantSearchResult(item.title, item.content, item.url));
+  );
+  const hotlineAnchorResults = sourceProfileResults.filter((item) =>
+    !shouldFilterHotline ||
+    !isGovernmentPortalDomain(item.domain) ||
+    containsAnyKeyword(`${item.title} ${item.url}`, HOTLINE_ANCHOR_KEYWORDS)
+  );
+  const semanticEvaluatedResults = hotlineAnchorResults.map((item) => ({
+    ...item,
+    semanticDecision: evaluateHotlineSearchResult({
+      title: item.title,
+      snippet: item.content,
+      url: item.url,
+      domain: item.domain,
+      publishedDate: safeString(item.published_date),
+      sourceProfileIds: builtQuery.resolvedProfileIds,
+      hotlineFocused: shouldFilterHotline,
+      inferredDays,
+    }),
+  }));
+  const normalized = semanticEvaluatedResults
+    .filter((item) => item.semanticDecision.keep)
+    .map(({ semanticDecision, ...item }) => item);
+  const droppedSemanticSamples = semanticEvaluatedResults
+    .filter((item) => !item.semanticDecision.keep)
+    .slice(0, 5)
+    .map((item) => ({
+      title: item.title,
+      domain: item.domain,
+      published_date: item.published_date,
+      reason: item.semanticDecision.reason,
+      url: item.url,
+    }));
 
   return JSON.stringify(
     {
@@ -1361,6 +1669,7 @@ async function searchWeb(input: Record<string, unknown>): Promise<string> {
       baseQuery,
       sourceProfileIds: builtQuery.resolvedProfileIds,
       documentTypes: builtQuery.documentTypes,
+      queryHints: builtQuery.queryHints,
       subscriptionId: subscription?.id || null,
       subscriptionLabel: builtQuery.subscriptionLabel,
       extraKeywords,
@@ -1368,6 +1677,14 @@ async function searchWeb(input: Record<string, unknown>): Promise<string> {
       excludeDomains,
       timeWindowDays: inferredDays,
       timeWindow: dateWindow,
+      rawResultCount: normalizedResults.length,
+      filterStats: {
+        droppedOutOfWindowCount: normalizedResults.length - withinWindowResults.length,
+        droppedBySourceProfileCount: withinWindowResults.length - sourceProfileResults.length,
+        droppedByGovernmentAnchorCount: sourceProfileResults.length - hotlineAnchorResults.length,
+        droppedBySemanticFilterCount: hotlineAnchorResults.length - normalized.length,
+      },
+      droppedSemanticSamples,
       resultCount: normalized.length,
       results: normalized,
     },

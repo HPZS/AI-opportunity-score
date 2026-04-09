@@ -13,6 +13,7 @@ type TimeWindowStatus = "in_window" | "out_of_window" | "unknown";
 type SystemGuardFlag =
   | "weak_time_demoted"
   | "placeholder_title_demoted"
+  | "listing_page_demoted"
   | "budget_document_demoted"
   | "url_date_conflict_demoted"
   | "planning_stage_demoted"
@@ -67,6 +68,10 @@ function collectRecordArray(container: JsonRecord, key: string): JsonRecord[] {
 function collectStringArray(container: JsonRecord, key: string): string[] {
   const value = container[key];
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function normalizeWhitespace(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
 }
 
 function normalizeDateKey(value: unknown): string | null {
@@ -125,8 +130,37 @@ function isPlaceholderTitle(value: unknown): boolean {
   return (
     /^项目编号[:：]?/u.test(title) ||
     /^[一二三四五六七八九十]+[、，.．]/u.test(title) ||
-    /^(采购需求|招标文件|附件)$/u.test(title)
+    /^(采购需求|招标文件|附件)$/u.test(title) ||
+    /^(公开招标公告|邀请招标公告|竞争性磋商公告|询价公告|终止公告|更正公告|中标公告|成交公告)_中国政府采购网$/u.test(title)
   );
+}
+
+function isListingLikePage(item: JsonRecord): boolean {
+  const title = typeof item.title === "string" ? normalizeWhitespace(item.title) : "";
+  const url = typeof item.url === "string" ? item.url.toLowerCase() : "";
+  const normalizedUrl = typeof item.normalizedUrl === "string" ? item.normalizedUrl.toLowerCase() : "";
+  const context = buildGuardContext(item);
+
+  if (
+    /^(公开招标公告|邀请招标公告|竞争性磋商公告|询价公告|终止公告|更正公告|中标公告|成交公告)_中国政府采购网$/u.test(title)
+  ) {
+    return true;
+  }
+
+  if (
+    /\/index(?:_\d+)?\.htm$/u.test(url) ||
+    /\/index(?:_\d+)?\.htm$/u.test(normalizedUrl) ||
+    /\/cggg\/[^?#]+\/$/u.test(url) ||
+    /\/cggg\/[^?#]+\/$/u.test(normalizedUrl)
+  ) {
+    return true;
+  }
+
+  if (context.includes("中国政府采购网") && context.includes("栏目聚合页")) {
+    return true;
+  }
+
+  return false;
 }
 
 function buildGuardContext(item: JsonRecord): string {
@@ -171,6 +205,10 @@ function collectGuardFlags(
 
   if (item.leadCategory === "current_opportunity" && isPlaceholderTitle(item.title)) {
     flags.push("placeholder_title_demoted");
+  }
+
+  if (item.leadCategory === "current_opportunity" && isListingLikePage(item)) {
+    flags.push("listing_page_demoted");
   }
 
   if (
@@ -241,6 +279,15 @@ function applyScreeningGuards(
       nextItem.followUpAction = "建议补充正式项目名称后再判断";
     }
     existingNotes.push("系统兜底拦截：标题疑似章节名或项目编号占位，待补权威项目名称后再决定是否入池。");
+  }
+
+  if (flags.includes("listing_page_demoted")) {
+    nextItem.shouldEnterPool = false;
+    nextItem.isActionableNow = false;
+    nextItem.leadCategory = "policy_signal";
+    nextItem.followUpAction = "建议下钻具体公告详情页后再判断";
+    nextItem.categoryReason = "系统兜底拦截：当前链接疑似栏目聚合页或列表页，不是具体项目公告详情页，暂不作为当前可入池商机。";
+    existingNotes.push("系统兜底拦截：栏目聚合页/列表页不得直接入池，需先下钻到具体项目公告详情页。");
   }
 
   if (flags.includes("budget_document_demoted")) {
@@ -426,8 +473,8 @@ function normalizeScreeningResult(parsedResult: JsonRecord): JsonRecord {
   ) {
     notes.push("系统已按时间窗自动纠正 withinTimeWindow 和结果分桶，避免发布时间与窗口判断冲突。");
   }
-  if (!notes.some((note) => note.includes("系统已对旧PDF候选日期、占位标题和预算公开类弱信号执行入池兜底校正"))) {
-    notes.push("系统已对旧PDF候选日期、占位标题和预算公开类弱信号执行入池兜底校正，避免明显过期、命名不完整或仅预算规划型线索误入池。");
+  if (!notes.some((note) => note.includes("系统已对旧PDF候选日期、占位标题、栏目聚合页和预算公开类弱信号执行入池兜底校正"))) {
+    notes.push("系统已对旧PDF候选日期、占位标题、栏目聚合页和预算公开类弱信号执行入池兜底校正，避免明显过期、命名不完整、列表页或仅预算规划型线索误入池。");
   }
   if (
     runtimeOverrides.activationReasons.length > 0 &&

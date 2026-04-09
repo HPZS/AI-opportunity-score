@@ -31,6 +31,10 @@ export interface SearchSourceProfile {
   // search_web 会把这些域名传给 include_domains，用于进一步约束召回来源。
   includeDomains: string[];
   excludeDomains?: string[];
+
+  // 查询增强词。
+  // 用于在不同来源类型下自动强化“执行信号”约束，避免所有来源都混用同一组宽词。
+  queryHints?: string[];
 }
 
 // 关键词订阅预设。
@@ -179,6 +183,7 @@ export const SIGNAL_SOURCE_PROFILES: SearchSourceProfile[] = [
     searchScopes: ["site:.gov.cn"],
     documentTypes: ["政策文件", "通知公告", "工作动态"],
     includeDomains: [],
+    queryHints: ["采购意向", "需求征集", "建设方案", "升级改造", "立项", "项目"],
   },
   {
     id: "procurement_portals",
@@ -187,6 +192,7 @@ export const SIGNAL_SOURCE_PROFILES: SearchSourceProfile[] = [
     searchScopes: ["site:ccgp.gov.cn", "site:ccgp-*.gov.cn"],
     documentTypes: ["采购公告", "中标公告", "采购意向"],
     includeDomains: ["ccgp.gov.cn"],
+    queryHints: ["采购公告", "采购意向", "采购需求", "公开招标", "竞争性磋商", "服务采购"],
   },
   {
     id: "trading_platforms",
@@ -195,6 +201,7 @@ export const SIGNAL_SOURCE_PROFILES: SearchSourceProfile[] = [
     searchScopes: ["site:ggzy.gov.cn", "site:ggzyfw.gov.cn", "site:ggzyjypt.gov.cn"],
     documentTypes: ["招标公告", "成交结果", "更正公告"],
     includeDomains: ["ggzy.gov.cn", "ggzyfw.gov.cn", "ggzyjypt.gov.cn"],
+    queryHints: ["招标公告", "交易公告", "成交结果", "更正公告", "建设项目", "服务项目"],
   },
   {
     id: "official_mixed",
@@ -203,6 +210,7 @@ export const SIGNAL_SOURCE_PROFILES: SearchSourceProfile[] = [
     searchScopes: ["site:.gov.cn", "site:ccgp.gov.cn", "site:ggzy.gov.cn", "site:ggzyfw.gov.cn", "site:ggzyjypt.gov.cn"],
     documentTypes: ["政策文件", "采购公告", "招标公告", "中标公告"],
     includeDomains: ["ccgp.gov.cn", "ggzy.gov.cn", "ggzyfw.gov.cn", "ggzyjypt.gov.cn"],
+    queryHints: ["采购意向", "采购公告", "招标公告", "需求征集", "建设方案", "升级改造"],
   },
   {
     id: "enterprise_news",
@@ -257,8 +265,87 @@ export const KEYWORD_SUBSCRIPTIONS: KeywordSubscription[] = [
   },
 ];
 
+const SEARCH_QUERY_ANCHOR_KEYWORDS = ["12345", "便民热线", "热线", "接诉即办", "热线平台"];
+const STRONG_SEARCH_QUERY_ANCHOR_TERMS = ["12345", "12345热线", "政务服务便民热线", "12345政务服务便民热线", "接诉即办"];
+const SEARCH_QUERY_EXECUTION_KEYWORDS = [
+  "采购公告",
+  "招标公告",
+  "采购需求",
+  "服务采购",
+  "运维服务",
+  "运行维护",
+  "采购意向",
+  "需求征集",
+  "建设方案",
+  "升级改造",
+  "立项",
+];
+
 function unique(items: string[]): string[] {
   return Array.from(new Set(items.filter(Boolean)));
+}
+
+function includesAnyKeyword(text: string, keywords: string[]): boolean {
+  return keywords.some((keyword) => text.includes(keyword.toLowerCase()));
+}
+
+function pickSourceIntentTerms(baseQuery: string, profileIds: string[]): string[] {
+  const hasProcurementLike =
+    profileIds.includes("procurement_portals") ||
+    profileIds.includes("trading_platforms") ||
+    profileIds.includes("bidding_announcements") ||
+    profileIds.includes("official_mixed");
+  const hasGovernmentOnly =
+    !hasProcurementLike &&
+    (profileIds.includes("government_portals") || profileIds.includes("policy_documents"));
+
+  const procurementTerms = ["采购公告", "招标公告", "采购需求", "运维服务"];
+  const governmentTerms = ["采购意向", "需求征集", "建设方案", "升级改造"];
+  const candidates = hasProcurementLike ? procurementTerms : hasGovernmentOnly ? governmentTerms : [];
+
+  return candidates
+    .filter((item) => !baseQuery.includes(item.toLowerCase()))
+    .slice(0, 1);
+}
+
+function pickSubscriptionBoostTerms(baseQuery: string, subscriptionId?: string, profileIds: string[] = []): string[] {
+  if (subscriptionId !== "hotline_upgrade") return [];
+  const hasProcurementLike =
+    profileIds.includes("procurement_portals") ||
+    profileIds.includes("trading_platforms") ||
+    profileIds.includes("bidding_announcements") ||
+    profileIds.includes("official_mixed");
+  const parts: string[] = [];
+
+  if (hasProcurementLike && !baseQuery.includes("政务服务便民热线")) {
+    parts.push("政务服务便民热线");
+  }
+
+  if (!includesAnyKeyword(baseQuery, SEARCH_QUERY_ANCHOR_KEYWORDS)) {
+    parts.push("12345");
+  }
+
+  return parts.slice(0, 2);
+}
+
+function pickExtraIntentTerms(baseQuery: string, items: string[]): string[] {
+  return items
+    .map((item) => normalizeQueryText(item))
+    .filter(Boolean)
+    .filter((item) => !baseQuery.includes(item))
+    .filter((item) =>
+      STRONG_SEARCH_QUERY_ANCHOR_TERMS.some((term) => item.includes(term.toLowerCase())) ||
+      includesAnyKeyword(item, SEARCH_QUERY_EXECUTION_KEYWORDS)
+    )
+    .slice(0, 2);
+}
+
+function shouldUseGovernmentSiteScope(profileIds: string[]): boolean {
+  return (
+    profileIds.includes("government_portals") ||
+    profileIds.includes("policy_documents") ||
+    profileIds.includes("official_mixed")
+  );
 }
 
 // 通过 id 获取单个信号源预设。
@@ -279,6 +366,7 @@ export function mergeSourceProfiles(profileIds: string[]): {
   documentTypes: string[];
   includeDomains: string[];
   excludeDomains: string[];
+  queryHints: string[];
 } {
   const profiles = profileIds
     .map((id) => getSignalSourceProfile(id))
@@ -292,6 +380,7 @@ export function mergeSourceProfiles(profileIds: string[]): {
     documentTypes: unique(profiles.flatMap((item) => item.documentTypes || [])).slice(0, 12),
     includeDomains: unique(profiles.flatMap((item) => item.includeDomains)).slice(0, 12),
     excludeDomains: unique(profiles.flatMap((item) => item.excludeDomains || [])).slice(0, 12),
+    queryHints: unique(profiles.flatMap((item) => item.queryHints || [])).slice(0, 8),
   };
 }
 
@@ -311,14 +400,25 @@ export function buildSearchQuery(input: {
   resolvedProfileIds: string[];
   documentTypes: string[];
   subscriptionLabel: string | null;
+  queryHints: string[];
 } {
   const sourceProfiles = mergeSourceProfiles(input.sourceProfileIds || []);
   const subscription = input.subscriptionId ? getKeywordSubscription(input.subscriptionId) : undefined;
+  const normalizedBaseQuery = normalizeQueryText(input.baseQuery);
+  const selectedSubscriptionBoostTerms = pickSubscriptionBoostTerms(
+    normalizedBaseQuery,
+    input.subscriptionId,
+    sourceProfiles.resolvedProfileIds,
+  );
+  const selectedSourceIntentTerms = pickSourceIntentTerms(normalizedBaseQuery, sourceProfiles.resolvedProfileIds);
+  const selectedExtraKeywords = pickExtraIntentTerms(normalizedBaseQuery, input.extraKeywords || []);
+  const selectedSearchScopes = shouldUseGovernmentSiteScope(sourceProfiles.resolvedProfileIds) ? ["site:.gov.cn"] : [];
   const parts = [
-    input.baseQuery.trim(),
-    ...(subscription?.keywords || []).slice(0, 8),
-    ...(input.extraKeywords || []).filter(Boolean).slice(0, 6),
-    ...sourceProfiles.searchScopes,
+    normalizedBaseQuery,
+    ...selectedSubscriptionBoostTerms,
+    ...selectedSourceIntentTerms,
+    ...selectedExtraKeywords,
+    ...selectedSearchScopes,
   ].filter(Boolean);
 
   return {
@@ -327,5 +427,33 @@ export function buildSearchQuery(input: {
     // 把文档类型一并返回，方便调用方知道当前预设的“内容意图”。
     documentTypes: sourceProfiles.documentTypes,
     subscriptionLabel: subscription?.label || null,
+    queryHints: sourceProfiles.queryHints,
   };
+}
+
+function normalizeQueryText(value: string): string {
+  const text = value
+    .replace(/\b(?:site:[^\s]+|OR|AND)\b/gi, " ")
+    .replace(/[()]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!text) return "";
+
+  const blockedTokens = [
+    "检索",
+    "搜索",
+    "热线百科",
+    "样板",
+    "经验做法",
+    "典型案例",
+    "媒体聚焦",
+    "chinabidding.com",
+  ];
+
+  const filtered = text
+    .split(/\s+/)
+    .filter((token) => token && !blockedTokens.some((blocked) => token.toLowerCase().includes(blocked.toLowerCase())));
+
+  return unique(filtered).join(" ").trim().toLowerCase();
 }

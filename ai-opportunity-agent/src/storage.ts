@@ -11,6 +11,8 @@ interface TaskStorageInput {
   inputFile?: string;
   assistantText: string;
   attemptCount?: number;
+  stoppedByUser?: boolean;
+  completed?: boolean;
   tokens?: {
     input: number;
     output: number;
@@ -143,6 +145,8 @@ export function saveTaskResult(input: TaskStorageInput): { filePath: string; par
     },
     taskMeta: {
       attemptCount: input.attemptCount || 1,
+      stoppedByUser: input.stoppedByUser || false,
+      completed: input.completed !== false,
     },
     tokens: input.tokens || null,
     parsed: parsedResult !== null,

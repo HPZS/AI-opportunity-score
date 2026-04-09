@@ -245,13 +245,43 @@ async function main() {
   }
 
   try {
-    const taskExecution = await runTaskWithSupervisor(agent, {
-      taskType,
-      prompt,
-      inputFile,
-    });
+    let manualStopRequested = false;
+    const handleTaskSigint = () => {
+      if (manualStopRequested) {
+        printInfo("手动终止请求已收到，正在等待当前尝试停止并保存已有结果。");
+        return;
+      }
+      manualStopRequested = true;
+      printInfo("收到手动终止请求，正在停止当前尝试。已成功入池的结果会保留并写入结果文件。");
+      if (agent.isProcessing) {
+        agent.abort();
+      }
+    };
+
+    let taskExecution = null;
+    process.on("SIGINT", handleTaskSigint);
+    try {
+      taskExecution = await runTaskWithSupervisor(agent, {
+        taskType,
+        prompt,
+        inputFile,
+      }, {
+        shouldStop: () => manualStopRequested,
+      });
+    } finally {
+      process.off("SIGINT", handleTaskSigint);
+    }
+
     if (taskExecution) {
-      const { result, taskMessage, taskType: canonicalTaskType, originalTaskType, attemptCount, validation } =
+      const {
+        result,
+        taskMessage,
+        taskType: canonicalTaskType,
+        originalTaskType,
+        attemptCount,
+        stoppedByUser,
+        validation,
+      } =
         taskExecution;
 
       if (result.text.trim()) {
@@ -267,6 +297,8 @@ async function main() {
         inputFile,
         assistantText: result.text,
         attemptCount,
+        stoppedByUser,
+        completed: validation.ok,
         tokens: result.tokens,
       });
       printInfo(`任务结果已保存到 ${saved.filePath}`);
@@ -293,6 +325,11 @@ async function main() {
         }
       } catch (error: any) {
         printInfo(`持续改进复盘生成失败，已跳过: ${error.message}`);
+      }
+
+      if (stoppedByUser) {
+        printInfo("任务已按用户请求提前终止；当前已完成尝试中的入池结果已保留。");
+        return;
       }
 
       const failureMessage = buildTaskFailureMessage(validation);

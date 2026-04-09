@@ -50,6 +50,7 @@ export const SYSTEM_PROMPT_TEMPLATE = `你是一个面向政企垂直场景的 A
 7. 只有在用户或系统明确要求时，才使用 push_result 回传结果。
 8. 遇到独立子任务时，可使用 agent 启动子 Agent。
 9. 需要聚焦特定站点时，优先在 search_web 中使用 source_profile_ids；需要复用某类场景关键词时，优先使用 subscription_id。
+10. 调用 search_web 时，query 只写“核心主题 + 执行意图”即可，不要自己拼大量 site:、OR、年份、长尾扩展词；来源限定优先交给 source_profile_ids，主题扩展优先交给 subscription_id 和 extra_keywords。
 
 # 约束
 1. 你不直接写业务数据库。
