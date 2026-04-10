@@ -3,11 +3,15 @@
 import * as readline from "readline";
 import { Agent } from "./agent.js";
 import { printWelcome, printUserPrompt, printError, printInfo } from "./ui.js";
+import { buildTaskResumeKey } from "./investigation-recovery.js";
 import { loadSession, getLatestSessionId } from "./session.js";
+import { resolveTaskProfile } from "./task-config.js";
 import type { PermissionMode } from "./tools.js";
 import { getEnvVar, loadEnvFile } from "./env.js";
+import { attachExecutionStatsToParsedResult, formatTaskExecutionStats } from "./execution-stats.js";
+import { normalizeParsedTaskResult } from "./result-normalizer.js";
 import { saveTaskResult } from "./storage.js";
-import { buildTaskFailureMessage, runTaskWithSupervisor } from "./task-runner.js";
+import { buildTaskFailureMessage, buildTaskMessage, extractJsonFromText, runTaskWithSupervisor } from "./task-runner.js";
 import { runScreeningSelfImprovementReview } from "./self-improvement.js";
 
 loadEnvFile();
@@ -288,6 +292,8 @@ async function main() {
         process.stdout.write(`\n${result.text}\n`);
       }
 
+      const toolTrace = agent.exportToolExecutionTrace();
+
       const saved = saveTaskResult({
         taskType: canonicalTaskType,
         originalTaskType,
@@ -299,9 +305,25 @@ async function main() {
         attemptCount,
         stoppedByUser,
         completed: validation.ok,
+        taskState: validation.ok ? "completed" : "failed",
         tokens: result.tokens,
+        toolTrace,
+        resumeKey: buildTaskResumeKey({
+          taskType: canonicalTaskType,
+          prompt,
+          inputFile,
+        }),
       });
       printInfo(`任务结果已保存到 ${saved.filePath}`);
+
+      const parsedForStats = attachExecutionStatsToParsedResult(
+        canonicalTaskType,
+        normalizeParsedTaskResult(canonicalTaskType, extractJsonFromText(result.text)),
+        toolTrace
+      );
+      for (const line of formatTaskExecutionStats(canonicalTaskType, parsedForStats)) {
+        printInfo(line);
+      }
 
       try {
         const review = await runScreeningSelfImprovementReview(agent, {
@@ -340,6 +362,40 @@ async function main() {
       return;
     }
   } catch (error: any) {
+    const taskProfile = resolveTaskProfile(taskType);
+    const canonicalTaskType = taskProfile.canonicalType;
+    const taskMessage = buildTaskMessage(taskType, prompt, inputFile);
+    const toolTrace = agent.exportToolExecutionTrace();
+
+    if (canonicalTaskType === "investigation" && taskMessage) {
+      try {
+        const saved = saveTaskResult({
+          taskType: canonicalTaskType,
+          originalTaskType: taskType || canonicalTaskType,
+          model,
+          taskMessage,
+          prompt,
+          inputFile,
+          assistantText: "",
+          attemptCount: 1,
+          stoppedByUser: false,
+          completed: false,
+          taskState: "partial",
+          failureReason: error.message,
+          tokens: agent.getTokenUsage(),
+          toolTrace,
+          resumeKey: buildTaskResumeKey({
+            taskType: canonicalTaskType,
+            prompt,
+            inputFile,
+          }),
+        });
+        printInfo(`深查中断检查点已保存到 ${saved.filePath}`);
+      } catch (checkpointError: any) {
+        printInfo(`深查中断检查点保存失败，已跳过: ${checkpointError.message}`);
+      }
+    }
+
     printError(error.message);
     process.exit(1);
   }

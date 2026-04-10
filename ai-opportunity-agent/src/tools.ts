@@ -36,6 +36,8 @@ const DEFAULT_HEADERS = {
 type JsonObject = Record<string, unknown>;
 
 type LeadCategory = "current_opportunity" | "historical_case" | "policy_signal";
+type PoolEntryTier = "优先跟进" | "观察入池" | "信号跟踪" | "不入池";
+type OpportunitySignalClass = "明确招采" | "前置信号" | "方向信号" | "参考线索";
 type PublishTimeSource = "explicit" | "body" | "pdf_body_unverified" | "unknown";
 
 export const toolDefinitions: ToolDef[] = [
@@ -139,25 +141,59 @@ export const toolDefinitions: ToolDef[] = [
       properties: {
         lead_title: { type: "string", description: "目标线索标题" },
         lead_summary: { type: "string", description: "目标线索摘要" },
+        lead_url: { type: "string", description: "目标线索原始链接，可选" },
+        source_name: { type: "string", description: "来源名称，可选" },
+        source_domain: { type: "string", description: "来源域名，可选" },
+        publish_time: { type: "string", description: "线索发布时间，可选" },
         source_continuity_texts: {
           type: "array",
           items: { type: "string" },
           description: "同源连续性证据文本",
+        },
+        source_continuity_links: {
+          type: "array",
+          items: { type: "string" },
+          description: "同源连续性证据链接，可选",
         },
         similar_case_texts: {
           type: "array",
           items: { type: "string" },
           description: "横向同类案例文本",
         },
+        similar_case_links: {
+          type: "array",
+          items: { type: "string" },
+          description: "横向同类案例链接，可选",
+        },
         landing_case_texts: {
           type: "array",
           items: { type: "string" },
           description: "落地验证证据文本",
         },
+        landing_case_links: {
+          type: "array",
+          items: { type: "string" },
+          description: "落地验证证据链接，可选",
+        },
         policy_support_texts: {
           type: "array",
           items: { type: "string" },
           description: "政策支撑文本",
+        },
+        policy_support_links: {
+          type: "array",
+          items: { type: "string" },
+          description: "政策支撑链接，可选",
+        },
+        budget_support_texts: {
+          type: "array",
+          items: { type: "string" },
+          description: "预算或资金支撑文本，可选",
+        },
+        budget_support_links: {
+          type: "array",
+          items: { type: "string" },
+          description: "预算或资金支撑链接，可选",
         },
       },
       required: ["lead_title"],
@@ -165,7 +201,7 @@ export const toolDefinitions: ToolDef[] = [
   },
   {
     name: "analyze_opportunity",
-    description: "输出综合分析结果，包括推荐技术路径、改造方式、建议动作和解释摘要。",
+    description: "输出综合分析结果；若传入 deep_analysis_score，则仅输出深查补充建议，不重算初筛主分。",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -329,6 +365,131 @@ function mergeStringArrays(...inputs: string[][]): string[] {
   return Array.from(new Set(inputs.flat().filter(Boolean)));
 }
 
+function buildDescription(input: {
+  title?: string;
+  summary?: string;
+  content?: string;
+  fallback?: string;
+}): string {
+  const summary = normalizeWhitespace(safeString(input.summary));
+  if (summary) return truncateText(summary, 160);
+
+  const fallback = normalizeWhitespace(safeString(input.fallback));
+  if (fallback) return truncateText(fallback, 160);
+
+  const content = normalizeWhitespace(safeString(input.content));
+  if (content) return truncateText(content, 160);
+
+  return truncateText(normalizeWhitespace(safeString(input.title)), 160);
+}
+
+function buildLinkItems(urls: string[], type: string, labelPrefix: string): JsonObject[] {
+  const normalized = Array.from(
+    new Set(
+      urls
+        .map((url) => normalizeUrl(safeString(url)))
+        .filter((url) => /^https?:\/\//i.test(url))
+    )
+  );
+
+  return normalized.map((url, index) => ({
+    label: normalized.length > 1 ? `${labelPrefix}${index + 1}` : labelPrefix,
+    url,
+    type,
+  }));
+}
+
+function flattenLinkGroups(groups: JsonObject[]): JsonObject[] {
+  const seen = new Set<string>();
+  const merged: JsonObject[] = [];
+  for (const group of groups) {
+    for (const item of Object.values(group)) {
+      if (!Array.isArray(item)) continue;
+      for (const link of item) {
+        if (typeof link !== "object" || link === null || Array.isArray(link)) continue;
+        const url = safeString((link as JsonObject).url);
+        if (!url || seen.has(url)) continue;
+        seen.add(url);
+        merged.push(link as JsonObject);
+      }
+    }
+  }
+  return merged;
+}
+
+function buildTimelineEntries(input: {
+  title?: string;
+  publishTime?: string | null;
+  leadUrl?: string;
+  sourceContinuityTexts?: string[];
+  sourceContinuityLinks?: string[];
+  similarCaseTexts?: string[];
+  similarCaseLinks?: string[];
+  landingCaseTexts?: string[];
+  landingCaseLinks?: string[];
+  policySupportTexts?: string[];
+  policySupportLinks?: string[];
+  budgetSupportTexts?: string[];
+  budgetSupportLinks?: string[];
+}): JsonObject[] {
+  const entries: JsonObject[] = [];
+  const pushEntries = (texts: string[], links: string[], type: string, title: string) => {
+    texts.forEach((text, index) => {
+      const description = normalizeWhitespace(text);
+      if (!description) return;
+      const resolvedDate =
+        extractPublishTime(description).normalized ||
+        extractDateFromUrl(links[index] || "") ||
+        null;
+      entries.push({
+        date: resolvedDate,
+        type,
+        title,
+        description,
+        sourceUrl: /^https?:\/\//i.test(links[index] || "") ? normalizeUrl(links[index]) : null,
+      });
+    });
+  };
+
+  if (input.publishTime) {
+    entries.push({
+      date: input.publishTime,
+      type: "publish",
+      title: "线索发布时间",
+      description: `${safeString(input.title) || "该线索"} 首次公开发布时间`,
+      sourceUrl: /^https?:\/\//i.test(input.leadUrl || "") ? normalizeUrl(safeString(input.leadUrl)) : null,
+    });
+  }
+
+  pushEntries(input.sourceContinuityTexts || [], input.sourceContinuityLinks || [], "source_continuity", "同源连续性");
+  pushEntries(input.similarCaseTexts || [], input.similarCaseLinks || [], "similar_case", "横向案例");
+  pushEntries(input.landingCaseTexts || [], input.landingCaseLinks || [], "landing_case", "落地验证");
+  pushEntries(input.policySupportTexts || [], input.policySupportLinks || [], "policy_support", "政策支撑");
+  pushEntries(input.budgetSupportTexts || [], input.budgetSupportLinks || [], "budget_support", "预算支撑");
+
+  return entries
+    .filter((entry) => safeString(entry.description))
+    .sort((a, b) => {
+      const left = safeString(a.date);
+      const right = safeString(b.date);
+      if (!left && !right) return 0;
+      if (!left) return 1;
+      if (!right) return -1;
+      return left.localeCompare(right);
+    });
+}
+
+function buildAiValueSummary(input: {
+  title?: string;
+  tags: string[];
+  technologies: string[];
+  transformationMode: string;
+}): string {
+  const tagText = input.tags.length > 0 ? input.tags.join("、") : "通用业务提效";
+  const techText = input.technologies.slice(0, 3).join("、") || "大模型问答、知识库检索、流程助手";
+  return `${safeString(input.title) || "该机会"} 在 ${tagText} 场景下具备明确 AI 切入空间，优先可从 ${techText} 方向做 ${input.transformationMode}。`;
+}
+
 function detectSourceType(sourceDomain: string, text: string): string {
   const combined = `${sourceDomain} ${text}`.toLowerCase();
   if (combined.includes("ccgp") || combined.includes("采购") || combined.includes("招标") || combined.includes("交易中心")) {
@@ -350,6 +511,36 @@ function detectSourceLevel(sourceDomain: string): string {
 function containsAnyKeyword(text: string, keywords: string[]): boolean {
   const lower = text.toLowerCase();
   return keywords.some((keyword) => lower.includes(keyword.toLowerCase()));
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function stripNegativeSignalMentions(text: string, keywords: string[]): string {
+  let next = normalizeWhitespace(text).replace(
+    /(?:未见|尚未|未出现|没有|缺少|待补证据[:：]?|待补|尚缺|暂无|无法确认|未获取|不能等同于)[^。；\n]{0,48}/giu,
+    " "
+  );
+  for (const keyword of keywords) {
+    const escapedKeyword = escapeRegExp(keyword);
+    next = next.replace(
+      new RegExp(
+        `(?:未见|尚未|未出现|没有|缺少|待补证据[:：]?|待补|尚缺|暂无|无法确认|未获取|不能等同于)[^。；，,\\n]{0,24}${escapedKeyword}`,
+        "giu"
+      ),
+      " "
+    );
+  }
+  return next;
+}
+
+function containsPositiveKeyword(text: string, keywords: string[]): boolean {
+  return containsAnyKeyword(stripNegativeSignalMentions(text, keywords), keywords);
+}
+
+function countPositiveKeywordHits(text: string, keywords: string[]): number {
+  return countKeywordHits(stripNegativeSignalMentions(text, keywords), keywords);
 }
 
 const HOTLINE_ANCHOR_KEYWORDS = ["12345", "便民热线", "热线", "接诉即办", "市民服务热线", "热线平台"];
@@ -420,6 +611,33 @@ const FORMAL_ADVANCE_SIGNAL_KEYWORDS = [
   "立项批复",
   "可研批复",
 ];
+const PROJECT_BODY_SIGNAL_KEYWORDS = [
+  "项目名称",
+  "项目编号",
+  "采购需求",
+  "采购内容",
+  "服务范围",
+  "服务期限",
+  "合同履约期限",
+  "预算金额",
+  "最高限价",
+  "采购方式",
+  "招标文件",
+  "投标人",
+  "招标项目",
+];
+const INDIRECT_PROCUREMENT_SIGNAL_KEYWORDS = [
+  "招标代理",
+  "代理机构",
+  "代理单位",
+  "代理服务",
+  "遴选代理",
+  "招标代理单位",
+  "招标代理机构",
+  "询价结果公示",
+  "代理结果公示",
+  "代理比选",
+];
 const EXECUTION_TASK_SIGNAL_KEYWORDS = [
   "建设任务",
   "重点任务",
@@ -456,6 +674,57 @@ const GOVERNMENT_REPORT_NOISE_KEYWORDS = [
   "做法",
   "专题报道",
 ];
+const AI_EXPLICIT_SIGNAL_KEYWORDS = [
+  "人工智能",
+  "大模型",
+  "智能客服",
+  "智能问答",
+  "智能座席",
+  "智能助手",
+  "语音识别",
+  "语音转写",
+  "知识推荐",
+  "知识库",
+  "ocr",
+  "图像识别",
+  "机器学习",
+  "算法模型",
+];
+const AI_DATA_SIGNAL_KEYWORDS = [
+  "文本",
+  "语音",
+  "图像",
+  "视频",
+  "知识库",
+  "问答",
+  "工单",
+  "审核",
+  "质检",
+  "客服",
+  "坐席",
+  "回访",
+  "派单",
+  "识别",
+  "分类",
+  "推荐",
+  "分析",
+  "检索",
+  "转写",
+];
+const BUSINESS_MODULE_SIGNAL_KEYWORDS = [
+  "平台",
+  "系统",
+  "服务",
+  "流程",
+  "热线",
+  "知识库",
+  "审批",
+  "工单",
+  "质检",
+  "合同",
+  "公文",
+  "客服",
+];
 const GENERIC_SEARCH_RESULT_TITLE_PATTERNS = [
   /^一[、，.．]/u,
   /^二[、，.．]/u,
@@ -480,11 +749,24 @@ function containsBudgetDocumentSignal(text: string): boolean {
 }
 
 function containsFormalAdvanceSignal(text: string): boolean {
-  return containsAnyKeyword(text, FORMAL_ADVANCE_SIGNAL_KEYWORDS);
+  return containsPositiveKeyword(text, FORMAL_ADVANCE_SIGNAL_KEYWORDS);
+}
+
+function containsProjectBodySignal(text: string): boolean {
+  return containsPositiveKeyword(text, PROJECT_BODY_SIGNAL_KEYWORDS);
+}
+
+function containsIndirectProcurementSignal(text: string): boolean {
+  return containsAnyKeyword(text, INDIRECT_PROCUREMENT_SIGNAL_KEYWORDS);
 }
 
 function containsExecutionTaskSignal(text: string): boolean {
   return containsAnyKeyword(text, EXECUTION_TASK_SIGNAL_KEYWORDS);
+}
+
+function countKeywordHits(text: string, keywords: string[]): number {
+  const lower = text.toLowerCase();
+  return keywords.filter((keyword) => lower.includes(keyword.toLowerCase())).length;
 }
 
 function isHotlineRelevantSearchResult(title: string, snippet: string, url: string): boolean {
@@ -861,41 +1143,122 @@ function detectScenarios(text: string): { tags: string[]; technologies: string[]
   };
 }
 
-function scoreAiFit(text: string, scenarioCount: number, budgetSignalCount: number): number {
-  let score = 35;
-  const lower = text.toLowerCase();
-  const repeatKeywords = ["重复", "提效", "辅助", "自动", "批量", "文本", "语音", "图像", "视频"];
-
-  score += Math.min(25, scenarioCount * 10);
-  score += Math.min(20, repeatKeywords.filter((keyword) => lower.includes(keyword)).length * 4);
-  score += Math.min(10, budgetSignalCount * 2);
-  if (lower.includes("知识库") || lower.includes("问答")) score += 8;
-  if (lower.includes("审核") || lower.includes("质检")) score += 6;
-  if (lower.includes("12345") || lower.includes("热线") || lower.includes("工单")) score += 10;
-  if (lower.includes("智能化升级") || lower.includes("平台建设")) score += 6;
-
-  return Math.max(0, Math.min(100, score));
-}
-
-function scoreMaturity(text: string, sourceLevel: string, publishTime: string | null, budgetSignalCount: number): number {
-  let score = sourceLevel === "A" ? 45 : sourceLevel === "B" ? 36 : 28;
-  const lower = text.toLowerCase();
-
-  const highCount = MATURITY_SIGNALS.high.filter((keyword) => lower.includes(keyword.toLowerCase())).length;
-  score += highCount * 10;
-  score += MATURITY_SIGNALS.medium.filter((keyword) => lower.includes(keyword.toLowerCase())).length * 6;
-  score += MATURITY_SIGNALS.policy.filter((keyword) => lower.includes(keyword.toLowerCase())).length * 4;
-  score += Math.min(12, budgetSignalCount * 4);
-
-  if (publishTime) {
-    const days = Math.floor((Date.now() - new Date(publishTime).getTime()) / (24 * 60 * 60 * 1000));
-    if (days <= 7) score += 10;
-    else if (days <= 30) score += 6;
-    else if (days <= 90) score += 2;
-    else score -= 8;
+function scoreScenarioFit(text: string, scenarioCount: number, evidenceCount: number): number {
+  if (scenarioCount === 0) {
+    return clampScore(12 + Math.min(10, countKeywordHits(text, BUSINESS_MODULE_SIGNAL_KEYWORDS) * 2));
   }
 
-  return Math.max(0, Math.min(100, score));
+  let score = 20;
+  score += Math.min(48, scenarioCount * 16);
+  score += Math.min(16, evidenceCount * 4);
+  score += Math.min(12, countKeywordHits(text, BUSINESS_MODULE_SIGNAL_KEYWORDS) * 3);
+
+  if (containsIndirectProcurementSignal(text) && !containsFormalAdvanceSignal(text) && !containsProjectBodySignal(text)) {
+    score -= 10;
+  }
+
+  return clampScore(score);
+}
+
+function scoreAiFit(text: string, scenarioCount: number, budgetSignalCount: number): number {
+  let score = 20;
+  const lower = text.toLowerCase();
+  const explicitAiHits = countKeywordHits(lower, AI_EXPLICIT_SIGNAL_KEYWORDS);
+  const dataSignalHits = countKeywordHits(lower, AI_DATA_SIGNAL_KEYWORDS);
+  const automationHits = countKeywordHits(lower, ["自动", "辅助", "提效", "识别", "分类", "推荐", "分析", "检索", "转写", "问答"]);
+  const hotlineHits = countKeywordHits(lower, ["12345", "热线", "工单"]);
+  const processSignalHits = countKeywordHits(lower, [
+    "运营服务",
+    "服务外包",
+    "人工服务",
+    "接听",
+    "受理",
+    "坐席",
+    "客服",
+    "工单",
+    "回访",
+    "知识库",
+    "检索",
+    "质检",
+    "审核",
+    "派单",
+    "7×24",
+    "7x24",
+  ]);
+
+  score += Math.min(24, scenarioCount * 6);
+  score += Math.min(24, dataSignalHits * 4);
+  score += Math.min(18, explicitAiHits * 6);
+  score += Math.min(12, automationHits * 3);
+  score += Math.min(18, processSignalHits * 3);
+  score += Math.min(6, budgetSignalCount * 2);
+
+  if (hotlineHits > 0) {
+    score += dataSignalHits >= 2 || explicitAiHits >= 1 ? 8 : 10;
+  }
+
+  if (containsPositiveKeyword(text, ["运营服务", "服务外包", "人工服务"]) && hotlineHits > 0) {
+    score += 8;
+  }
+
+  if (containsIndirectProcurementSignal(text) && explicitAiHits === 0 && dataSignalHits <= 1 && processSignalHits <= 2) {
+    score -= 8;
+  }
+
+  return clampScore(score);
+}
+
+function scoreMaturity(input: {
+  text: string;
+  sourceLevel: string;
+  publishTime: string | null;
+  weakPublishAgeDays: number | null;
+  budgetSignalCount: number;
+  stage: OpportunityStage;
+}): number {
+  let score = input.sourceLevel === "A" ? 30 : input.sourceLevel === "B" ? 22 : 14;
+  const lower = input.text.toLowerCase();
+  const formalAdvanceHits = countPositiveKeywordHits(lower, FORMAL_ADVANCE_SIGNAL_KEYWORDS);
+  const projectBodyHits = countPositiveKeywordHits(lower, PROJECT_BODY_SIGNAL_KEYWORDS);
+  const executionHits = countKeywordHits(lower, EXECUTION_TASK_SIGNAL_KEYWORDS);
+  const indirectWeakSignal =
+    containsIndirectProcurementSignal(lower) &&
+    !containsFormalAdvanceSignal(lower) &&
+    !containsProjectBodySignal(lower);
+
+  score += Math.min(24, formalAdvanceHits * 8);
+  score += Math.min(18, projectBodyHits * 4);
+  score += Math.min(10, executionHits * 2);
+  score += Math.min(12, input.budgetSignalCount * 4);
+
+  if (input.stage === "招标中") score += 12;
+  if (input.stage === "规划信号") score += 4;
+  if (input.stage === "政策信号") score -= 10;
+  if (["中标后", "合同签订", "已落地"].includes(input.stage)) score -= 24;
+
+  if (input.publishTime) {
+    const days = Math.floor((Date.now() - new Date(input.publishTime).getTime()) / (24 * 60 * 60 * 1000));
+    if (days <= 7) score += 12;
+    else if (days <= 30) score += 8;
+    else if (days <= 60) score += 2;
+    else if (days <= 90) score -= 4;
+    else score -= 12;
+  } else if (input.weakPublishAgeDays !== null) {
+    if (input.weakPublishAgeDays <= 30) score += 2;
+    else if (input.weakPublishAgeDays <= 45) score += 0;
+    else if (input.weakPublishAgeDays <= 90) score -= 8;
+    else score -= 14;
+  } else {
+    score -= 8;
+  }
+
+  if (indirectWeakSignal) {
+    score -= 26;
+  } else if (containsIndirectProcurementSignal(lower)) {
+    score -= 14;
+  }
+
+  return clampScore(score);
 }
 
 function clampScore(score: number): number {
@@ -951,6 +1314,11 @@ function classifyLead(input: {
   const lower = input.text.toLowerCase();
   const isBudgetDocument = containsBudgetDocumentSignal(input.text);
   const hasFormalAdvanceSignal = containsFormalAdvanceSignal(input.text);
+  const hasProjectBodySignal = containsProjectBodySignal(input.text);
+  const hasIndirectWeakSignal =
+    containsIndirectProcurementSignal(input.text) &&
+    !hasFormalAdvanceSignal &&
+    !hasProjectBodySignal;
   const hasCurrentOpportunitySignal =
     [
       "采购意向",
@@ -1009,6 +1377,14 @@ function classifyLead(input: {
     };
   }
 
+  if (hasIndirectWeakSignal) {
+    return {
+      leadCategory: "policy_signal",
+      isActionableNow: false,
+      categoryReason: "该线索体现的是招标代理、代理机构遴选或询价结果公示等前置采购动作，尚不能代表项目本体采购已正式启动，适合作为观察信号持续跟踪。",
+    };
+  }
+
   if ((input.stage === "招标中" || input.stage === "规划信号") && (isStale || isWeakHistorical || isWeakOutdated)) {
     return {
       leadCategory: "historical_case",
@@ -1050,11 +1426,23 @@ function classifyLead(input: {
   }
 
   if (input.stage === "政策信号" || input.sourceType === "政策类") {
-    if (!isStale && !isWeakOutdated && (hasCurrentOpportunitySignal || (hasDirectionalBuildSignal && hasExecutionTaskSignal))) {
+    if (
+      !isStale &&
+      !isWeakOutdated &&
+      hasFormalAdvanceSignal &&
+      (hasCurrentOpportunitySignal || (hasDirectionalBuildSignal && hasExecutionTaskSignal))
+    ) {
       return {
         leadCategory: "current_opportunity",
         isActionableNow: true,
         categoryReason: "该线索虽来自政策/政府动态来源，但正文已出现明确采购、建设任务或升级改造执行信号，可视为当前机会线索。",
+      };
+    }
+    if (!isStale && !isWeakOutdated && (hasDirectionalBuildSignal || hasExecutionTaskSignal || hasCurrentOpportunitySignal)) {
+      return {
+        leadCategory: "current_opportunity",
+        isActionableNow: false,
+        categoryReason: "该线索虽未形成明确采购或预算说明，但已体现出建设方向、持续推进意图或后续转化空间，适合作为观察型机会纳入候选池持续跟踪。",
       };
     }
     return {
@@ -1082,35 +1470,44 @@ function classifyLead(input: {
 }
 
 function scoreOpportunity(input: {
-  totalScore: number;
+  screeningScore: number;
   stage: OpportunityStage;
   budgetSignals: string[];
   publishTime: string | null;
   weakPublishAgeDays: number | null;
   leadCategory: LeadCategory;
+  text: string;
 }): number {
-  let score = input.totalScore;
+  let score = input.screeningScore;
   const ageDays = getAgeDays(input.publishTime);
+  const indirectWeakSignal =
+    containsIndirectProcurementSignal(input.text) &&
+    !containsFormalAdvanceSignal(input.text) &&
+    !containsProjectBodySignal(input.text);
 
-  if (input.stage === "招标中") score += 12;
-  if (input.stage === "规划信号") score += 6;
-  if (input.stage === "中标后") score -= 12;
-  if (input.stage === "合同签订") score -= 18;
-  if (input.stage === "已落地") score -= 20;
-  if (input.stage === "政策信号") score -= 15;
+  if (input.stage === "招标中") score += 4;
+  if (input.stage === "规划信号") score -= 2;
+  if (input.stage === "中标后") score -= 16;
+  if (input.stage === "合同签订") score -= 20;
+  if (input.stage === "已落地") score -= 24;
+  if (input.stage === "政策信号") score -= 14;
 
-  if (input.budgetSignals.length > 0) score += 6;
+  if (input.budgetSignals.length > 0) score += 4;
 
   if (ageDays !== null) {
-    if (ageDays <= 30) score += 8;
-    else if (ageDays <= 90) score += 2;
-    else score -= 18;
+    if (ageDays <= 30) score += 4;
+    else if (ageDays <= 90) score += 0;
+    else score -= 12;
   } else if (input.weakPublishAgeDays !== null) {
-    if (input.weakPublishAgeDays <= 30) score += 2;
+    if (input.weakPublishAgeDays <= 30) score += 0;
     else if (input.weakPublishAgeDays <= 45) score += 0;
     else if (input.weakPublishAgeDays <= 90) score -= 10;
     else if (input.weakPublishAgeDays <= 180) score -= 16;
     else score -= 24;
+  }
+
+  if (indirectWeakSignal) {
+    score -= 22;
   }
 
   if (input.leadCategory !== "current_opportunity") {
@@ -1121,14 +1518,16 @@ function scoreOpportunity(input: {
 }
 
 function scoreReferenceValue(input: {
+  scenarioFitScore: number;
   aiFitScore: number;
-  maturityScore: number;
+  opportunityMaturityScore: number;
   sourceLevel: string;
   budgetSignals: string[];
   stage: OpportunityStage;
   leadCategory: LeadCategory;
+  text: string;
 }): number {
-  let score = input.aiFitScore * 0.45 + input.maturityScore * 0.35;
+  let score = input.scenarioFitScore * 0.3 + input.aiFitScore * 0.25 + input.opportunityMaturityScore * 0.2;
 
   if (input.sourceLevel === "A") score += 12;
   else if (input.sourceLevel === "B") score += 6;
@@ -1136,6 +1535,9 @@ function scoreReferenceValue(input: {
   if (input.budgetSignals.length > 0) score += 8;
   if (["中标后", "合同签订", "已落地"].includes(input.stage)) score += 8;
   if (input.leadCategory === "policy_signal") score += 6;
+  if (containsIndirectProcurementSignal(input.text) && !containsFormalAdvanceSignal(input.text) && !containsProjectBodySignal(input.text)) {
+    score -= 10;
+  }
 
   return clampScore(score);
 }
@@ -1173,12 +1575,72 @@ function buildSuggestedAction(totalScore: number): string {
   return "建议暂不跟进";
 }
 
+function resolveOpportunitySignalClass(input: {
+  leadCategory: LeadCategory;
+  opportunityStage: OpportunityStage;
+  hasStrongPoolSignal: boolean;
+  hasExecutionTaskSignal: boolean;
+  hasDirectionalBuildSignal: boolean;
+  hasIndirectWeakSignal: boolean;
+}): OpportunitySignalClass {
+  if (input.leadCategory !== "current_opportunity") return "参考线索";
+  if (input.hasIndirectWeakSignal) return "参考线索";
+  if (input.hasStrongPoolSignal || input.opportunityStage === "招标中") return "明确招采";
+  if (input.hasExecutionTaskSignal || input.opportunityStage === "规划信号") return "前置信号";
+  if (input.hasDirectionalBuildSignal || input.opportunityStage === "政策信号") return "方向信号";
+  return "参考线索";
+}
+
+function resolvePoolEntryTier(input: {
+  leadCategory: LeadCategory;
+  passesWeakTimeGate: boolean;
+  budgetDocumentPoolEligible: boolean;
+  hasIndirectWeakSignal: boolean;
+  isActionableNow: boolean;
+  hasStrongPoolSignal: boolean;
+  hasExecutionTaskSignal: boolean;
+  hasDirectionalBuildSignal: boolean;
+  opportunityScore: number;
+  opportunityMaturityScore: number;
+  scenarioFitScore: number;
+  aiFitScore: number;
+}): PoolEntryTier {
+  if (input.leadCategory !== "current_opportunity") return "不入池";
+  if (!input.passesWeakTimeGate || !input.budgetDocumentPoolEligible || input.hasIndirectWeakSignal) return "不入池";
+  if (input.scenarioFitScore < 40 || input.aiFitScore < 35) return "不入池";
+
+  if (
+    input.isActionableNow &&
+    input.hasStrongPoolSignal &&
+    input.opportunityScore >= 65 &&
+    input.opportunityMaturityScore >= 50
+  ) {
+    return "优先跟进";
+  }
+
+  if (
+    input.hasStrongPoolSignal ||
+    input.hasExecutionTaskSignal ||
+    input.opportunityScore >= 50 ||
+    input.opportunityMaturityScore >= 40
+  ) {
+    return "观察入池";
+  }
+
+  if (input.hasDirectionalBuildSignal || input.scenarioFitScore >= 50) {
+    return "信号跟踪";
+  }
+
+  return "不入池";
+}
+
 function buildCategorySuggestion(input: {
   leadCategory: LeadCategory;
   isActionableNow: boolean;
   opportunityStage: OpportunityStage;
   opportunityScore: number;
   referenceValueScore: number;
+  poolEntryTier: PoolEntryTier;
 }): string {
   if (input.leadCategory === "policy_signal") {
     return "建议纳入政策信号池，作为方向性依据持续跟踪。";
@@ -1187,6 +1649,15 @@ function buildCategorySuggestion(input: {
     return input.referenceValueScore >= 70
       ? "建议纳入历史案例池，作为客户沟通和售前论证参考。"
       : "建议仅保留为一般参考，不作为当前商机推进。";
+  }
+  if (input.poolEntryTier === "优先跟进") {
+    return "建议优先跟进，尽快补齐客户关系、预算节点和竞争格局。";
+  }
+  if (input.poolEntryTier === "观察入池") {
+    return "建议进入机会池观察，重点补充采购范围、预算和立项进度。";
+  }
+  if (input.poolEntryTier === "信号跟踪") {
+    return "建议入池作为方向跟踪线索，持续关注后续采购、立项或试点转化。";
   }
   if (!input.isActionableNow) {
     return "建议先观察，不作为当前销售推进对象。";
@@ -1201,15 +1672,16 @@ function buildCategorySuggestion(input: {
 }
 
 function buildScoreReason(input: {
+  scenarioFitScore: number;
   scenarioTags: string[];
   aiFitScore: number;
-  maturityScore: number;
+  opportunityMaturityScore: number;
   sourceLevel: string;
   budgetSignals: string[];
 }): string {
   const scenarioText = input.scenarioTags.length > 0 ? input.scenarioTags.join("、") : "场景待补充识别";
   const budgetText = input.budgetSignals.length > 0 ? "出现预算或资金信号" : "预算信号暂不明显";
-  return `识别到 ${scenarioText} 场景；AI 适配度 ${input.aiFitScore} 分，商机成熟度 ${input.maturityScore} 分；来源可信等级 ${input.sourceLevel}；${budgetText}。`;
+  return `识别到 ${scenarioText} 场景；场景匹配度 ${input.scenarioFitScore} 分，AI 适配度 ${input.aiFitScore} 分，商机成熟度 ${input.opportunityMaturityScore} 分；来源可信等级 ${input.sourceLevel}；${budgetText}。`;
 }
 
 function evaluateOpportunity(input: {
@@ -1233,6 +1705,7 @@ function evaluateOpportunity(input: {
   const sourceType = detectSourceType(sourceDomain, text);
   const sourceLevel = detectSourceLevel(sourceDomain);
   const runtimeOverrides = loadRuntimeOverrides();
+  const ownerOrg = extractOrganization(text);
   const publishInfo = resolvePublishInfo({
     text,
     explicitPublishTime: input.publishTime,
@@ -1245,16 +1718,71 @@ function evaluateOpportunity(input: {
   const weakPublishAgeDays = getAgeDays(weakPublishCandidate);
   const scenarios = detectScenarios(text);
   const budgetSignals = extractBudgetSignals(text);
-
-  const aiFitScore = scoreAiFit(text, scenarios.tags.length, budgetSignals.length);
-  const maturityScore = scoreMaturity(text, sourceLevel, publishTime, budgetSignals.length);
-  const deepScore = typeof input.deepAnalysisScore === "number" ? input.deepAnalysisScore : 0;
-  const baseScore = Number((aiFitScore * 0.4 + maturityScore * 0.4 + deepScore * 0.2).toFixed(1));
   const lower = text.toLowerCase();
   const isBudgetDocument = containsBudgetDocumentSignal(text);
   const hasFormalAdvanceSignal = containsFormalAdvanceSignal(text);
+  const hasProjectBodySignal = containsProjectBodySignal(text);
+  const hasIndirectWeakSignal =
+    containsIndirectProcurementSignal(text) &&
+    !hasFormalAdvanceSignal &&
+    !hasProjectBodySignal;
+  const hasDirectionalBuildSignal =
+    [
+      "平台建设",
+      "接入大模型",
+      "试点",
+      "部署",
+      "上线",
+      "推广应用",
+      "实施方案",
+      "能力建设",
+    ].some((keyword) => lower.includes(keyword.toLowerCase()));
+  const hasExecutionTaskSignal =
+    containsExecutionTaskSignal(text) ||
+    [
+      "实施方案",
+      "建设任务",
+      "重点任务",
+      "场景建设",
+      "能力建设",
+      "智能客服",
+      "智能数据分析",
+      "智能座席",
+      "自动派单",
+      "知识库推荐",
+      "智能回访",
+      "智能质检",
+    ].some((keyword) => lower.includes(keyword.toLowerCase()));
   const hasProcurementSignal = MATURITY_SIGNALS.high.filter((keyword) => lower.includes(keyword.toLowerCase())).length >= 2;
   const opportunityStage = detectOpportunityStage(normalizeWhitespace(`${title} ${summary}`), text, sourceType);
+  const relatedLinks = buildLinkItems(url ? [url] : [], "main", "原始链接");
+  const sourceLinksByType = {
+    main: relatedLinks,
+    sourceContinuity: [],
+    similarCases: [],
+    landingCases: [],
+    policySupports: [],
+    budgetSupports: [],
+  };
+  const timeline = buildTimelineEntries({
+    title,
+    publishTime,
+    leadUrl: url,
+  });
+
+  const scenarioFitScore = scoreScenarioFit(text, scenarios.tags.length, scenarios.evidence.length);
+  const aiFitScore = scoreAiFit(text, scenarios.tags.length, budgetSignals.length);
+  const opportunityMaturityScore = scoreMaturity({
+    text,
+    sourceLevel,
+    publishTime,
+    weakPublishAgeDays,
+    budgetSignalCount: budgetSignals.length,
+    stage: opportunityStage,
+  });
+  const maturityScore = opportunityMaturityScore;
+  const deepScore = typeof input.deepAnalysisScore === "number" ? input.deepAnalysisScore : 0;
+  const screeningScoreRaw = Number((scenarioFitScore * 0.2 + aiFitScore * 0.4 + opportunityMaturityScore * 0.4).toFixed(1));
   const lead = classifyLead({
     stage: opportunityStage,
     sourceType,
@@ -1263,20 +1791,23 @@ function evaluateOpportunity(input: {
     text,
   });
   const opportunityScore = scoreOpportunity({
-    totalScore: baseScore,
+    screeningScore: screeningScoreRaw,
     stage: opportunityStage,
     budgetSignals,
     publishTime,
     weakPublishAgeDays,
     leadCategory: lead.leadCategory,
+    text,
   });
   const referenceValueScore = scoreReferenceValue({
+    scenarioFitScore,
     aiFitScore,
-    maturityScore,
+    opportunityMaturityScore,
     sourceLevel,
     budgetSignals,
     stage: opportunityStage,
     leadCategory: lead.leadCategory,
+    text,
   });
   let leadCategory = lead.leadCategory;
   let isActionableNow = lead.isActionableNow;
@@ -1304,17 +1835,27 @@ function evaluateOpportunity(input: {
     weakPublishAgeDays === null ||
     weakPublishAgeDays <= 45;
   const budgetDocumentPoolEligible = !isBudgetDocument || (hasFormalAdvanceSignal && publishTime !== null);
-  let shouldEnterPool =
-    leadCategory === "current_opportunity" &&
-    isActionableNow &&
-    passesWeakTimeGate &&
-    budgetDocumentPoolEligible &&
-    (
-      opportunityScore >= 60 ||
-      (sourceLevel === "A" && opportunityStage === "招标中" && hasProcurementSignal && budgetSignals.length > 0) ||
-      (sourceLevel === "A" && ["规划信号", "招标中"].includes(opportunityStage) && (budgetSignals.length > 0 || aiFitScore >= 68) && maturityScore >= 45) ||
-      (aiFitScore >= 68 && maturityScore >= 48)
-    );
+  const hasStrongPoolSignal =
+    hasFormalAdvanceSignal ||
+    hasProjectBodySignal ||
+    (opportunityStage === "招标中" && !hasIndirectWeakSignal);
+  const budgetPoolEligible =
+    !isBudgetDocument || hasFormalAdvanceSignal || hasExecutionTaskSignal || hasProjectBodySignal;
+  let poolEntryTier = resolvePoolEntryTier({
+    leadCategory,
+    passesWeakTimeGate,
+    budgetDocumentPoolEligible: budgetPoolEligible,
+    hasIndirectWeakSignal,
+    isActionableNow,
+    hasStrongPoolSignal,
+    hasExecutionTaskSignal,
+    hasDirectionalBuildSignal,
+    opportunityScore,
+    opportunityMaturityScore,
+    scenarioFitScore,
+    aiFitScore,
+  });
+  let shouldEnterPool = poolEntryTier !== "不入池";
 
   if (
     runtimeOverrides.poolGuards.requireResolvedProjectTitleForCurrentOpportunity &&
@@ -1322,11 +1863,13 @@ function evaluateOpportunity(input: {
     isPlaceholderOpportunityTitle(title)
   ) {
     shouldEnterPool = false;
+    poolEntryTier = "不入池";
     selfHealingFlags.push("placeholder_title_requires_resolution");
   }
 
   if (leadCategory === "current_opportunity" && isListingPage) {
     shouldEnterPool = false;
+    poolEntryTier = "不入池";
     selfHealingFlags.push("listing_page_blocked");
   }
 
@@ -1336,6 +1879,7 @@ function evaluateOpportunity(input: {
     publishInfo.source === "pdf_body_unverified"
   ) {
     shouldEnterPool = false;
+    poolEntryTier = "不入池";
     leadCategory = "policy_signal";
     isActionableNow = false;
     categoryReason = "系统自修复拦截：该线索仅有 PDF 正文候选日期，缺少权威公告页发布时间，暂不允许进入当前机会池。";
@@ -1351,6 +1895,7 @@ function evaluateOpportunity(input: {
     publishInfo.source !== "explicit"
   ) {
     shouldEnterPool = false;
+    poolEntryTier = "不入池";
     leadCategory = "historical_case";
     isActionableNow = false;
     categoryReason = "系统自修复拦截：PDF 链接路径日期明显早于当前时间窗，且缺少权威公告页发布时间，暂按历史/待核验线索处理。";
@@ -1358,20 +1903,46 @@ function evaluateOpportunity(input: {
   }
 
   totalScore = leadCategory === "current_opportunity" ? opportunityScore : referenceValueScore;
+  const opportunitySignalClass = resolveOpportunitySignalClass({
+    leadCategory,
+    opportunityStage,
+    hasStrongPoolSignal,
+    hasExecutionTaskSignal,
+    hasDirectionalBuildSignal,
+    hasIndirectWeakSignal,
+  });
 
   const followUpAction = shouldEnterPool
-    ? (opportunityScore >= 70 ? "建议进入候选机会池并优先跟进" : "建议进入候选机会池并持续观察")
+    ? (
+      poolEntryTier === "优先跟进"
+        ? "建议进入候选机会池并优先跟进"
+        : poolEntryTier === "观察入池"
+          ? "建议进入候选机会池并持续观察"
+          : "建议进入候选机会池并作为方向跟踪线索持续关注"
+    )
+    : hasIndirectWeakSignal
+      ? "建议持续跟踪正式招标转化，不按当前成熟商机推进"
+      : leadCategory !== "current_opportunity"
+        ? buildCategorySuggestion({
+            leadCategory,
+            isActionableNow,
+            opportunityStage,
+            opportunityScore,
+            referenceValueScore,
+            poolEntryTier,
+          })
     : (selfHealingFlags.includes("placeholder_title_requires_resolution")
       ? "建议补充正式项目名称后再判断"
       : selfHealingFlags.includes("listing_page_blocked")
         ? "建议下钻具体公告详情页后再判断"
-      : selfHealingFlags.includes("unverified_pdf_publish_time_blocked")
+        : selfHealingFlags.includes("unverified_pdf_publish_time_blocked")
         ? "建议先补抓权威公告页发布时间后再判断"
         : selfHealingFlags.includes("old_pdf_without_authority_page_blocked")
           ? "建议转为历史/待核验参考，不作为当前商机推进"
           : buildSuggestedAction(opportunityScore));
 
   return {
+    description: buildDescription({ title, summary, content, fallback: categoryReason }),
     sourceType,
     sourceLevel,
     leadCategory,
@@ -1380,22 +1951,33 @@ function evaluateOpportunity(input: {
     categoryReason,
     scenarioTags: scenarios.tags,
     scenarioConfidence: Number(Math.min(0.98, 0.45 + scenarios.tags.length * 0.12).toFixed(2)),
+    ownerOrg,
+    scenarioFitScore,
     aiFitScore,
+    opportunityMaturityScore,
     maturityScore,
+    screeningScore: opportunityScore,
     deepAnalysisScore: deepScore,
     totalScore,
     scoreBreakdown: {
-      baseScore,
+      scenarioFitScore,
+      aiFitScore,
+      opportunityMaturityScore,
+      baseScore: screeningScoreRaw,
+      screeningScoreRaw,
+      screeningScore: opportunityScore,
       opportunityScore,
       referenceValueScore,
+      deepAnalysisScore: deepScore,
     },
     shouldEnterPool,
     budgetSignals,
     evidenceList: [...scenarios.evidence, ...budgetSignals].slice(0, 6),
     scoreReason: buildScoreReason({
+      scenarioFitScore,
       scenarioTags: scenarios.tags,
       aiFitScore,
-      maturityScore,
+      opportunityMaturityScore,
       sourceLevel,
       budgetSignals,
     }),
@@ -1405,14 +1987,20 @@ function evaluateOpportunity(input: {
       opportunityStage,
       opportunityScore,
       referenceValueScore,
+      poolEntryTier,
     }),
     followUpAction,
+    poolEntryTier,
+    opportunitySignalClass,
     modelConfidence: Number(Math.min(0.95, 0.5 + scenarios.tags.length * 0.08).toFixed(2)),
     publishTime,
     publishTimeRaw: publishInfo.raw,
     publishTimeConfidence: publishInfo.confidence,
     publishTimeSource: publishInfo.source,
     recommendedTechnologies: scenarios.technologies,
+    relatedLinks,
+    sourceLinksByType,
+    timeline,
     selfHealingFlags,
     runtimeGuardVersion: runtimeOverrides.version,
   };
@@ -1493,6 +2081,77 @@ function summarizeEvidence(items: string[], fallback: string): string {
   const normalized = items.map((item) => normalizeWhitespace(item)).filter(Boolean);
   if (normalized.length === 0) return fallback;
   return normalized.slice(0, 3).join("；");
+}
+
+function countEvidenceKeywordHits(items: string[], keywords: string[]): number {
+  const text = normalizeWhitespace(items.join(" "));
+  if (!text) return 0;
+  return countKeywordHits(text, keywords);
+}
+
+function scoreDeepEvidenceDimension(input: {
+  base: number;
+  evidenceCount: number;
+  keywordHits: number;
+  maxScore: number;
+  evidenceWeight?: number;
+  keywordWeight?: number;
+}): number {
+  const evidenceWeight = input.evidenceWeight ?? 10;
+  const keywordWeight = input.keywordWeight ?? 4;
+  const score =
+    input.base +
+    Math.min(evidenceWeight, input.evidenceCount * Math.max(1, Math.floor(evidenceWeight / 2))) +
+    Math.min(keywordWeight * 3, input.keywordHits * keywordWeight);
+  return clampScore(Math.min(input.maxScore, score));
+}
+
+function buildDeepSuggestedAction(input: {
+  evidenceStrengthScore: number;
+  hasWeakProcurementOnly: boolean;
+  hasFormalProjectSignal: boolean;
+  hasBudgetSupport: boolean;
+}): string {
+  if (input.hasWeakProcurementOnly) {
+    return "建议持续跟踪正式招标转化，不按当前成熟商机推进";
+  }
+  if (input.evidenceStrengthScore >= 80 && input.hasFormalProjectSignal) {
+    return "建议售前立即跟进";
+  }
+  if (input.evidenceStrengthScore >= 65 && input.hasFormalProjectSignal) {
+    return input.hasBudgetSupport
+      ? "建议继续补齐客户关系和竞争格局后跟进"
+      : "建议先补预算与采购范围后再投入售前";
+  }
+  if (input.evidenceStrengthScore >= 50) {
+    return "建议持续观察并补充正式采购、预算和需求附件";
+  }
+  return "建议暂不投入正式售前资源";
+}
+
+function buildDeepActionRationale(input: {
+  hasWeakProcurementOnly: boolean;
+  hasFormalProjectSignal: boolean;
+  hasBudgetSupport: boolean;
+  publishTime: string | null;
+  riskFlags: string[];
+}): string {
+  if (input.hasWeakProcurementOnly) {
+    return "当前证据主要停留在招标代理、代理机构遴选或询价结果公示等前置信号，缺少项目本体采购和预算闭环。";
+  }
+  if (!input.hasFormalProjectSignal) {
+    return "当前已识别业务方向，但还缺少项目本体采购、采购需求或服务范围等正式执行证据。";
+  }
+  if (!input.hasBudgetSupport) {
+    return "项目方向较明确，但预算、最高限价或资金安排仍待补证据，暂不宜按最高优先级推进。";
+  }
+  if (!input.publishTime) {
+    return "方向和采购证据较完整，但发布时间仍需持续校验，建议跟进时同步核实窗口期。";
+  }
+  if (input.riskFlags.length > 0) {
+    return `方向较清晰，但仍需关注 ${input.riskFlags.join("、")} 等风险。`;
+  }
+  return "场景方向、项目本体和预算支撑较完整，可按正式售前机会推进。";
 }
 
 function deriveDomain(url: string): string {
@@ -1762,9 +2421,25 @@ function extractSignal(input: Record<string, unknown>): string {
     weakPublishAgeDays: getAgeDays(publishInfo.normalized || resolveWeakPublishCandidate(publishInfo.raw)),
     text,
   });
+  const ownerOrg = extractOrganization(text);
+  const relatedLinks = buildLinkItems(url ? [url] : [], "main", "原始链接");
+  const sourceLinksByType = {
+    main: relatedLinks,
+    sourceContinuity: [],
+    similarCases: [],
+    landingCases: [],
+    policySupports: [],
+    budgetSupports: [],
+  };
+  const timeline = buildTimelineEntries({
+    title,
+    publishTime: publishInfo.normalized,
+    leadUrl: url,
+  });
 
   const result = {
     title,
+    description: buildDescription({ title, summary, content }),
     normalizedTitle: normalizeWhitespace(title),
     url,
     normalizedUrl: url ? normalizeUrl(url) : "",
@@ -1777,7 +2452,8 @@ function extractSignal(input: Record<string, unknown>): string {
     opportunityStage,
     isActionableNow: lead.isActionableNow,
     categoryReason: lead.categoryReason,
-    organizationName: extractOrganization(text),
+    organizationName: ownerOrg,
+    ownerOrg,
     publishTimeRaw: publishInfo.raw,
     publishTime: publishInfo.normalized,
     publishTimeConfidence: publishInfo.confidence,
@@ -1787,6 +2463,9 @@ function extractSignal(input: Record<string, unknown>): string {
     recommendedTechnologies: scenarios.technologies,
     budgetSignals: extractBudgetSignals(text),
     evidenceList: scenarios.evidence,
+    relatedLinks,
+    sourceLinksByType,
+    timeline,
   };
 
   return JSON.stringify(result, null, 2);
@@ -1795,32 +2474,182 @@ function extractSignal(input: Record<string, unknown>): string {
 function deepInvestigate(input: Record<string, unknown>): string {
   const leadTitle = safeString(input.lead_title);
   const leadSummary = safeString(input.lead_summary);
+  const leadUrl = safeString(input.lead_url);
+  const sourceName = safeString(input.source_name);
+  const sourceDomain = safeString(input.source_domain) || deriveDomain(leadUrl);
+  const publishTime = safeString(input.publish_time) || null;
   const sourceContinuityTexts = safeStringArray(input.source_continuity_texts);
+  const sourceContinuityLinks = safeStringArray(input.source_continuity_links);
   const similarCaseTexts = safeStringArray(input.similar_case_texts);
+  const similarCaseLinks = safeStringArray(input.similar_case_links);
   const landingCaseTexts = safeStringArray(input.landing_case_texts);
+  const landingCaseLinks = safeStringArray(input.landing_case_links);
   const policySupportTexts = safeStringArray(input.policy_support_texts);
+  const policySupportLinks = safeStringArray(input.policy_support_links);
+  const budgetSupportTexts = safeStringArray(input.budget_support_texts);
+  const budgetSupportLinks = safeStringArray(input.budget_support_links);
+  const evidenceBase = normalizeWhitespace(
+    [
+      leadTitle,
+      leadSummary,
+      ...sourceContinuityTexts,
+      ...similarCaseTexts,
+      ...landingCaseTexts,
+      ...policySupportTexts,
+      ...budgetSupportTexts,
+    ].join(" ")
+  );
+  const budgetSignals = extractBudgetSignals(evidenceBase);
+  const hasFormalProjectSignal =
+    containsFormalAdvanceSignal(evidenceBase) ||
+    containsProjectBodySignal(evidenceBase);
+  const hasWeakProcurementOnly =
+    containsIndirectProcurementSignal(evidenceBase) &&
+    !containsFormalAdvanceSignal(evidenceBase) &&
+    !containsProjectBodySignal(evidenceBase) &&
+    budgetSignals.length === 0;
+  const hasBudgetSupport = budgetSignals.length > 0 || budgetSupportTexts.length > 0;
 
-  const evidenceBase = normalizeWhitespace(`${leadTitle} ${leadSummary}`);
-  const derivedScore =
-    Math.min(25, sourceContinuityTexts.length * 8) +
-    Math.min(25, similarCaseTexts.length * 8) +
-    Math.min(25, landingCaseTexts.length * 8) +
-    Math.min(25, policySupportTexts.length * 8);
+  const sourceContinuityScore = scoreDeepEvidenceDimension({
+    base: 12,
+    evidenceCount: sourceContinuityTexts.length,
+    keywordHits: countEvidenceKeywordHits(sourceContinuityTexts, [...FORMAL_ADVANCE_SIGNAL_KEYWORDS, ...PROJECT_BODY_SIGNAL_KEYWORDS]),
+    maxScore: 100,
+    evidenceWeight: 18,
+    keywordWeight: 6,
+  });
+  const procurementEvidenceScore = scoreDeepEvidenceDimension({
+    base: hasFormalProjectSignal ? 38 : 18,
+    evidenceCount: landingCaseTexts.length + (hasBudgetSupport ? 1 : 0),
+    keywordHits: countEvidenceKeywordHits(
+      [...sourceContinuityTexts, ...landingCaseTexts, ...budgetSupportTexts, ...budgetSignals],
+      [...FORMAL_ADVANCE_SIGNAL_KEYWORDS, ...PROJECT_BODY_SIGNAL_KEYWORDS, "中标", "成交", "合同", "预算金额", "最高限价"]
+    ),
+    maxScore: 100,
+    evidenceWeight: 16,
+    keywordWeight: 5,
+  });
+  const similarCaseScore = scoreDeepEvidenceDimension({
+    base: 18,
+    evidenceCount: similarCaseTexts.length,
+    keywordHits: countEvidenceKeywordHits(similarCaseTexts, ["中标", "成交", "预算", "服务期", "智能化", "知识库", "语音转写"]),
+    maxScore: 100,
+    evidenceWeight: 18,
+    keywordWeight: 4,
+  });
+  const policyBudgetSupportScore = scoreDeepEvidenceDimension({
+    base: 16,
+    evidenceCount: policySupportTexts.length + budgetSupportTexts.length + (hasBudgetSupport ? 1 : 0),
+    keywordHits: countEvidenceKeywordHits(
+      [...policySupportTexts, ...budgetSupportTexts, ...budgetSignals],
+      ["政策", "通知", "方案", "专项", "预算", "资金", "最高限价", "财政"]
+    ),
+    maxScore: 100,
+    evidenceWeight: 16,
+    keywordWeight: 4,
+  });
 
-  const deepAnalysisScore = Math.max(35, Math.min(100, derivedScore || inferDeepScoreFromText(evidenceBase)));
-  const suggestedAction = buildSuggestedAction(deepAnalysisScore);
+  let followThroughReadinessScore = 18;
+  if (sourceContinuityTexts.length > 0) followThroughReadinessScore += 14;
+  if (landingCaseTexts.length > 0) followThroughReadinessScore += 12;
+  if (hasFormalProjectSignal) followThroughReadinessScore += 18;
+  if (hasBudgetSupport) followThroughReadinessScore += 12;
+  if (hasWeakProcurementOnly) followThroughReadinessScore -= 20;
+  followThroughReadinessScore = clampScore(followThroughReadinessScore);
+
+  let evidenceStrengthScore = clampScore(
+    sourceContinuityScore * 0.22 +
+    procurementEvidenceScore * 0.3 +
+    similarCaseScore * 0.16 +
+    policyBudgetSupportScore * 0.16 +
+    followThroughReadinessScore * 0.16
+  );
+
+  if (evidenceStrengthScore === 0) {
+    evidenceStrengthScore = Math.max(35, Math.min(100, inferDeepScoreFromText(evidenceBase)));
+  }
+
+  if (hasWeakProcurementOnly) {
+    evidenceStrengthScore = Math.min(evidenceStrengthScore, 58);
+  } else if (!hasFormalProjectSignal && !hasBudgetSupport) {
+    evidenceStrengthScore = Math.min(evidenceStrengthScore, 62);
+  }
+
+  const deepAnalysisScore = evidenceStrengthScore;
+  const suggestedAction = buildDeepSuggestedAction({
+    evidenceStrengthScore,
+    hasWeakProcurementOnly,
+    hasFormalProjectSignal,
+    hasBudgetSupport,
+  });
+  const ownerOrg = extractOrganization(evidenceBase);
+  const sourceLinksByType = {
+    main: buildLinkItems(leadUrl ? [leadUrl] : [], "main", "原始链接"),
+    sourceContinuity: buildLinkItems(sourceContinuityLinks, "source_continuity", "同源证据"),
+    similarCases: buildLinkItems(similarCaseLinks, "similar_case", "横向案例"),
+    landingCases: buildLinkItems(landingCaseLinks, "landing_case", "落地验证"),
+    policySupports: buildLinkItems(policySupportLinks, "policy_support", "政策支撑"),
+    budgetSupports: buildLinkItems(budgetSupportLinks, "budget_support", "预算支撑"),
+  };
+  const relatedLinks = flattenLinkGroups([sourceLinksByType]);
+  const timeline = buildTimelineEntries({
+    title: leadTitle,
+    publishTime,
+    leadUrl,
+    sourceContinuityTexts,
+    sourceContinuityLinks,
+    similarCaseTexts,
+    similarCaseLinks,
+    landingCaseTexts,
+    landingCaseLinks,
+    policySupportTexts,
+    policySupportLinks,
+    budgetSupportTexts: [...budgetSupportTexts, ...budgetSignals],
+    budgetSupportLinks,
+  });
+  const riskFlags = hasWeakProcurementOnly
+    ? ["前置信号偏强但项目本体证据不足", "缺少正式项目采购与预算闭环"]
+    : [
+        ...(!hasFormalProjectSignal ? ["缺少正式项目本体采购证据"] : []),
+        ...(!hasBudgetSupport ? ["预算或资金支撑待补证据"] : []),
+      ];
 
   return JSON.stringify(
     {
       leadTitle,
+      description: buildDescription({
+        title: leadTitle,
+        summary: leadSummary,
+        content: evidenceBase,
+        fallback: buildDeepConclusion(deepAnalysisScore),
+      }),
+      ownerOrg,
+      sourceName,
+      sourceDomain,
+      leadUrl,
       sourceContinuity: summarizeEvidence(sourceContinuityTexts, "暂未补充到明显的同源连续性证据。"),
       similarCaseSummary: summarizeEvidence(similarCaseTexts, "暂未检索到清晰的横向同类案例。"),
       landingCaseSummary: summarizeEvidence(landingCaseTexts, "暂未补充到明确的中标、验收或上线证据。"),
       policySupportSummary: summarizeEvidence(policySupportTexts, "暂未发现直接的政策或专项支撑材料。"),
-      budgetSupportSummary: summarizeEvidence(extractBudgetSignals(evidenceBase), "预算支撑信息待进一步核验。"),
+      budgetSupportSummary: summarizeEvidence(
+        [...budgetSupportTexts, ...budgetSignals],
+        "预算支撑信息待进一步核验。"
+      ),
       deepAnalysisConclusion: buildDeepConclusion(deepAnalysisScore),
+      evidenceStrengthScore,
       deepAnalysisScore,
+      scoreBreakdown: {
+        sourceContinuityScore,
+        procurementEvidenceScore,
+        similarCaseScore,
+        policyBudgetSupportScore,
+        followThroughReadinessScore,
+      },
       suggestedAction,
+      relatedLinks,
+      sourceLinksByType,
+      timeline,
+      riskFlags,
     },
     null,
     2
@@ -1829,39 +2658,146 @@ function deepInvestigate(input: Record<string, unknown>): string {
 
 function analyzeOpportunity(input: Record<string, unknown>): string {
   const deepAnalysisScore = typeof input.deep_analysis_score === "number" ? input.deep_analysis_score : 0;
-  const result = evaluateOpportunity({
-    title: safeString(input.title),
-    summary: safeString(input.summary),
-    content: safeString(input.content),
-    url: safeString(input.url),
-    sourceDomain: safeString(input.source_domain),
-    publishTime: safeString(input.publish_time) || null,
-    publishTimeRaw: safeString(input.publish_time_raw) || null,
-    publishTimeConfidence: safeNumber(input.publish_time_confidence),
-    isPdf: input.is_pdf === true,
-    deepAnalysisScore,
+  const title = safeString(input.title);
+  const summary = safeString(input.summary);
+  const content = safeString(input.content);
+  const url = safeString(input.url);
+  const sourceDomain = safeString(input.source_domain);
+  const publishTime = safeString(input.publish_time) || null;
+  const publishTimeRaw = safeString(input.publish_time_raw) || null;
+  const publishTimeConfidence = safeNumber(input.publish_time_confidence);
+  const isPdf = input.is_pdf === true;
+  const text = normalizeWhitespace(`${title} ${summary} ${content}`);
+  const scenarios = detectScenarios(text);
+  const aiFitScore = scoreAiFit(text, scenarios.tags.length, extractBudgetSignals(text).length);
+  const technologies = scenarios.technologies;
+  const tags = scenarios.tags;
+  const transformationMode = decideTransformationMode(aiFitScore);
+  const hasFormalProjectSignal =
+    containsFormalAdvanceSignal(text) ||
+    containsProjectBodySignal(text);
+  const hasWeakProcurementOnly =
+    containsIndirectProcurementSignal(text) &&
+    !containsFormalAdvanceSignal(text) &&
+    !containsProjectBodySignal(text);
+  const hasBudgetSupport = extractBudgetSignals(text).length > 0;
+  const resolvedPublishTime = resolvePublishInfo({
+    text,
+    explicitPublishTime: publishTime,
+    explicitPublishTimeRaw: publishTimeRaw,
+    explicitPublishTimeConfidence: publishTimeConfidence,
+    isPdf,
+  }).normalized;
+  const riskFlags = [
+    ...(!hasFormalProjectSignal ? ["缺少正式项目本体采购或服务范围证据"] : []),
+    ...(!hasBudgetSupport ? ["预算或最高限价待补证据"] : []),
+    ...(hasWeakProcurementOnly ? ["当前仍偏前置采购信号"] : []),
+    ...(!resolvedPublishTime ? ["发布时间待进一步核验"] : []),
+  ];
+  const ownerOrg = extractOrganization(text);
+  const sourceLinksByType = {
+    main: buildLinkItems(url ? [url] : [], "main", "原始链接"),
+    sourceContinuity: [],
+    similarCases: [],
+    landingCases: [],
+    policySupports: [],
+    budgetSupports: [],
+  };
+  const relatedLinks = flattenLinkGroups([sourceLinksByType]);
+  const timeline = buildTimelineEntries({
+    title,
+    publishTime: resolvedPublishTime,
+    leadUrl: url,
+  });
+  const aiValueSummary = buildAiValueSummary({
+    title,
+    tags,
+    technologies,
+    transformationMode,
   });
 
-  const technologies = Array.isArray(result.recommendedTechnologies)
-    ? (result.recommendedTechnologies as string[])
-    : [];
-  const tags = Array.isArray(result.scenarioTags) ? (result.scenarioTags as string[]) : [];
+  if (deepAnalysisScore > 0) {
+    const suggestedAction = buildDeepSuggestedAction({
+      evidenceStrengthScore: deepAnalysisScore,
+      hasWeakProcurementOnly,
+      hasFormalProjectSignal,
+      hasBudgetSupport,
+    });
+    const actionRationale = buildDeepActionRationale({
+      hasWeakProcurementOnly,
+      hasFormalProjectSignal,
+      hasBudgetSupport,
+      publishTime: resolvedPublishTime,
+      riskFlags,
+    });
+
+    return JSON.stringify(
+      {
+        analysisMode: "investigation_supplement",
+        description: buildDescription({ title, summary, content }),
+        ownerOrg,
+        scenarioTags: tags,
+        recommendedTechnologies: technologies,
+        transformationMode,
+        analysisSummary: `${title || "该线索"} 更适合从 ${tags.length > 0 ? tags.join("、") : "通用业务提效"} 方向切入，优先考虑 ${technologies.slice(0, 3).join("、") || "大模型问答、知识库检索和流程助手"}。`,
+        aiValueSummary,
+        aiRisks: riskFlags,
+        suggestedAction,
+        toolSuggestedAction: suggestedAction,
+        actionRationale,
+        followUpAction: suggestedAction,
+        riskFlags,
+        relatedLinks,
+        sourceLinksByType,
+        timeline,
+        evidenceStrengthScore: deepAnalysisScore,
+        deepAnalysisScore,
+        screeningPreservationNote: "当前为深查补充模式，不覆盖初筛的 leadCategory、opportunityStage、shouldEnterPool 和主评分。",
+      },
+      null,
+      2
+    );
+  }
+
+  const result = evaluateOpportunity({
+    title,
+    summary,
+    content,
+    url,
+    sourceDomain,
+    publishTime,
+    publishTimeRaw,
+    publishTimeConfidence,
+    isPdf,
+  });
 
   return JSON.stringify(
     {
       leadCategory: result.leadCategory,
       opportunityStage: result.opportunityStage,
       isActionableNow: result.isActionableNow,
-      scenarioTags: tags,
-      recommendedTechnologies: technologies,
-      transformationMode: decideTransformationMode(Number(result.aiFitScore)),
+      description: result.description,
+      ownerOrg: result.ownerOrg,
+      scenarioTags: Array.isArray(result.scenarioTags) ? (result.scenarioTags as string[]) : [],
+      recommendedTechnologies: Array.isArray(result.recommendedTechnologies)
+        ? (result.recommendedTechnologies as string[])
+        : [],
+      transformationMode,
+      aiValueSummary,
+      aiRisks: riskFlags,
       suggestedAction: result.suggestedAction,
       followUpAction: result.followUpAction,
-      analysisSummary: `${safeString(input.title)} 更适合从 ${tags.length > 0 ? tags.join("、") : "通用业务提效"} 方向切入，优先考虑 ${technologies.slice(0, 3).join("、") || "大模型问答和知识库"}。`,
+      analysisSummary: `${title} 更适合从 ${tags.length > 0 ? tags.join("、") : "通用业务提效"} 方向切入，优先考虑 ${technologies.slice(0, 3).join("、") || "大模型问答和知识库"}。`,
       shouldEnterPool: result.shouldEnterPool,
-      totalScore: result.totalScore,
+      relatedLinks: result.relatedLinks,
+      sourceLinksByType: result.sourceLinksByType,
+      timeline: result.timeline,
+      scenarioFitScore: result.scenarioFitScore,
       aiFitScore: result.aiFitScore,
+      opportunityMaturityScore: result.opportunityMaturityScore,
       maturityScore: result.maturityScore,
+      screeningScore: result.screeningScore,
+      totalScore: result.totalScore,
       scoreBreakdown: result.scoreBreakdown,
       scoreReason: result.scoreReason,
     },

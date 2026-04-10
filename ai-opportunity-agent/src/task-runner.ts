@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "fs";
 import { Agent } from "./agent.js";
 import { printInfo } from "./ui.js";
+import { buildInvestigationResumePrompt, loadLatestInvestigationRecovery } from "./investigation-recovery.js";
 import { resolveTaskProfile } from "./task-config.js";
 import { SCREENING_DEFAULT_CONFIG } from "./config/screening-config.js";
 import { normalizeParsedTaskResult } from "./result-normalizer.js";
@@ -81,6 +82,17 @@ export function buildTaskMessage(taskType?: string, prompt?: string, inputFile?:
 
   if (taskProfile.buildExecutionSummary) {
     parts.push(taskProfile.buildExecutionSummary());
+  }
+
+  if (taskProfile.canonicalType === "investigation") {
+    const checkpoint = loadLatestInvestigationRecovery({
+      taskType: taskProfile.canonicalType,
+      prompt,
+      inputFile,
+    });
+    if (checkpoint) {
+      parts.push(buildInvestigationResumePrompt(checkpoint));
+    }
   }
 
   parts.push(taskProfile.buildOutputRequirements());

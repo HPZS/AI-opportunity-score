@@ -268,6 +268,7 @@ function applyScreeningGuards(
     nextItem.leadCategory = "historical_case";
     nextItem.isActionableNow = false;
     nextItem.shouldEnterPool = false;
+    nextItem.poolEntryTier = "不入池";
     nextItem.followUpAction = "建议暂不跟进";
     nextItem.categoryReason = "该线索缺少权威发布时间，且正文候选日期明显早于当前时间窗，暂按历史/待核验参考处理。";
     existingNotes.push("系统兜底降级：正文候选日期明显早于当前时间窗，已取消入池并转为历史/待核验参考。");
@@ -275,6 +276,7 @@ function applyScreeningGuards(
 
   if (flags.includes("placeholder_title_demoted")) {
     nextItem.shouldEnterPool = false;
+    nextItem.poolEntryTier = "不入池";
     if (nextItem.isActionableNow !== false) {
       nextItem.followUpAction = "建议补充正式项目名称后再判断";
     }
@@ -285,6 +287,7 @@ function applyScreeningGuards(
     nextItem.shouldEnterPool = false;
     nextItem.isActionableNow = false;
     nextItem.leadCategory = "policy_signal";
+    nextItem.poolEntryTier = "不入池";
     nextItem.followUpAction = "建议下钻具体公告详情页后再判断";
     nextItem.categoryReason = "系统兜底拦截：当前链接疑似栏目聚合页或列表页，不是具体项目公告详情页，暂不作为当前可入池商机。";
     existingNotes.push("系统兜底拦截：栏目聚合页/列表页不得直接入池，需先下钻到具体项目公告详情页。");
@@ -294,6 +297,7 @@ function applyScreeningGuards(
     nextItem.leadCategory = "policy_signal";
     nextItem.isActionableNow = false;
     nextItem.shouldEnterPool = false;
+    nextItem.poolEntryTier = "不入池";
     nextItem.followUpAction = "建议持续观察预算与后续采购节点";
     nextItem.categoryReason = "该线索属于预算公开/预算支出类文件，虽有建设方向，但尚缺少独立采购、需求征集或立项批复信号，暂按政策/规划观察线索处理。";
     existingNotes.push("系统兜底降级：预算公开/预算支出类文件缺少独立采购或立项推进信号，已取消入池并转为政策/规划观察线索。");
@@ -303,6 +307,7 @@ function applyScreeningGuards(
     nextItem.leadCategory = "policy_signal";
     nextItem.isActionableNow = false;
     nextItem.shouldEnterPool = false;
+    nextItem.poolEntryTier = "不入池";
     nextItem.followUpAction = "建议持续观察后续采购、立项或招标节点";
     nextItem.categoryReason = "系统自修复降级：该线索仅体现为规划信号，当前缺少明确采购、立项、需求征集或招标执行证据。";
     existingNotes.push("系统自修复降级：规划信号缺少执行证据，已取消当前跟进与入池资格。");
@@ -312,6 +317,7 @@ function applyScreeningGuards(
     nextItem.leadCategory = "policy_signal";
     nextItem.isActionableNow = false;
     nextItem.shouldEnterPool = false;
+    nextItem.poolEntryTier = "不入池";
     nextItem.followUpAction = "建议先补抓权威公告页发布时间后再判断";
     nextItem.categoryReason = "系统自修复降级：该 PDF 仅有正文候选日期，缺少权威公告页发布时间，暂不作为当前机会推进。";
     existingNotes.push("系统自修复降级：PDF 仅有正文候选日期，未取得权威公告页发布时间，已取消入池。");
@@ -321,6 +327,7 @@ function applyScreeningGuards(
     nextItem.leadCategory = "historical_case";
     nextItem.isActionableNow = false;
     nextItem.shouldEnterPool = false;
+    nextItem.poolEntryTier = "不入池";
     nextItem.followUpAction = "建议转入窗口外/历史参考，除非补到近窗公告页";
     nextItem.categoryReason = "系统自修复降级：链接路径日期与任务时间窗明显冲突，且缺少权威公告页发布时间，暂按历史或窗口外线索处理。";
     nextItem.withinTimeWindow = false;
@@ -346,6 +353,7 @@ function applyFinalConsistencyCheck(
   if (nextItem.shouldEnterPool === true && withinTimeWindow !== true) {
     nextItem.shouldEnterPool = false;
     nextItem.isActionableNow = false;
+    nextItem.poolEntryTier = "不入池";
     if (withinTimeWindow === false) nextItem.leadCategory = "historical_case";
     nextItem.followUpAction = withinTimeWindow === false ? "建议暂不跟进" : "建议先补齐发布时间后再判断";
     notes.push("系统终检回退：入池资格与时间窗状态不一致，已取消入池。");
@@ -356,6 +364,7 @@ function applyFinalConsistencyCheck(
     nextItem.leadCategory = "policy_signal";
     nextItem.isActionableNow = false;
     nextItem.shouldEnterPool = false;
+    nextItem.poolEntryTier = "不入池";
     nextItem.followUpAction = "建议持续观察后续执行节点";
     notes.push("系统终检回退：规划信号不得直接按当前可行动机会输出。");
     changed = true;
@@ -434,6 +443,9 @@ function buildScreeningSummary(
   summary.outOfWindowCount = buckets.outOfWindowLeads.length;
   summary.poolEntryCount = currentOpportunities.filter((item) => item.shouldEnterPool === true).length;
   summary.recommendedFollowUpCount = currentOpportunities.filter(isPositiveFollowUp).length;
+  summary.priorityFollowUpCount = currentOpportunities.filter((item) => item.poolEntryTier === "优先跟进").length;
+  summary.watchlistCount = currentOpportunities.filter((item) => item.poolEntryTier === "观察入池").length;
+  summary.signalTrackingCount = currentOpportunities.filter((item) => item.poolEntryTier === "信号跟踪").length;
 
   return summary;
 }

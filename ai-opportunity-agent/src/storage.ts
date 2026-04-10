@@ -1,5 +1,8 @@
 import { existsSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
+import type { ToolExecutionTraceEntry } from "./agent.js";
+import { attachExecutionStatsToParsedResult } from "./execution-stats.js";
+import { buildInvestigationRecoveryResult } from "./investigation-recovery.js";
 import { normalizeParsedTaskResult } from "./result-normalizer.js";
 
 interface TaskStorageInput {
@@ -17,6 +20,10 @@ interface TaskStorageInput {
     input: number;
     output: number;
   };
+  toolTrace?: ToolExecutionTraceEntry[];
+  resumeKey?: string;
+  taskState?: "completed" | "failed" | "partial";
+  failureReason?: string;
 }
 
 function ensureDir(dir: string): void {
@@ -131,7 +138,25 @@ export function saveTaskResult(input: TaskStorageInput): { filePath: string; par
   const baseName = `${timestamp}_${slugify(input.taskType)}`;
   const filename = `${baseName}.json`;
   const filePath = join(baseDir, filename);
-  const parsedResult = normalizeParsedTaskResult(input.taskType, extractJsonFromText(input.assistantText));
+  const normalizedParsedResult = normalizeParsedTaskResult(input.taskType, extractJsonFromText(input.assistantText));
+  const fallbackRecoveryResult =
+    normalizedParsedResult === null && input.taskType === "investigation" && input.taskState === "partial"
+      ? buildInvestigationRecoveryResult({
+          taskType: input.taskType,
+          prompt: input.prompt,
+          inputFile: input.inputFile,
+          taskMessage: input.taskMessage,
+          toolTrace: input.toolTrace || [],
+          assistantText: input.assistantText,
+          errorMessage: input.failureReason,
+        })
+      : null;
+  const parsedResult = attachExecutionStatsToParsedResult(
+    input.taskType,
+    fallbackRecoveryResult || normalizedParsedResult,
+    input.toolTrace || []
+  );
+  const taskState = input.taskState || (input.completed === false ? "failed" : "completed");
 
   const payload = {
     taskType: input.taskType,
@@ -147,6 +172,10 @@ export function saveTaskResult(input: TaskStorageInput): { filePath: string; par
       attemptCount: input.attemptCount || 1,
       stoppedByUser: input.stoppedByUser || false,
       completed: input.completed !== false,
+      taskState,
+      resumable: taskState === "partial" && input.taskType === "investigation",
+      resumeKey: input.resumeKey || null,
+      failureReason: input.failureReason || null,
     },
     tokens: input.tokens || null,
     parsed: parsedResult !== null,
