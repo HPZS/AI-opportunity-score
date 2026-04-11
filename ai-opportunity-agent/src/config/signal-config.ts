@@ -66,6 +66,12 @@ export interface ScreeningOpportunityTypeConfig {
   subscriptionIds?: string[];
 }
 
+// 初筛默认信号源配置。
+// 用于控制 screening 任务默认优先使用哪些来源预设。
+export interface ScreeningSourceProfileConfig {
+  sourceProfileIds: string[];
+}
+
 // 场景规则：控制业务场景识别和技术推荐。
 export const SCENARIO_RULES: ScenarioRule[] = [
   {
@@ -420,6 +426,16 @@ export const SCREENING_OPPORTUNITY_TYPE_CONFIG: ScreeningOpportunityTypeConfig =
     singleSubscriptionId: "hotline_upgrade",
   };
 
+// 初筛默认信号源配置。
+// 这些来源会作为当前 screening 的默认搜索来源预设。
+export const SCREENING_SOURCE_PROFILE_CONFIG: ScreeningSourceProfileConfig = {
+  sourceProfileIds: ["government_portals", "procurement_portals", "trading_platforms"],
+};
+
+// 初筛默认补充关键词。
+// 这些词会作为当前 screening 的 extra_keywords 候选补充给 search_web。
+export const SCREENING_EXTRA_KEYWORDS: string[] = [];
+
 const SEARCH_QUERY_ANCHOR_KEYWORDS = [
   "12345",
   "便民热线",
@@ -573,6 +589,32 @@ export function getScreeningOpportunityTypeSelection(): {
       .map((id) => getKeywordSubscription(id)?.label || id)
       .filter(Boolean),
   };
+}
+
+export function getScreeningSourceProfileSelection(): {
+  sourceProfileIds: string[];
+  labels: string[];
+} {
+  const sourceProfileIds = unique(
+    (SCREENING_SOURCE_PROFILE_CONFIG.sourceProfileIds || []).filter(
+      (id) => typeof id === "string" && !!getSignalSourceProfile(id),
+    ),
+  );
+
+  return {
+    sourceProfileIds,
+    labels: sourceProfileIds
+      .map((id) => getSignalSourceProfile(id)?.label || id)
+      .filter(Boolean),
+  };
+}
+
+export function getScreeningExtraKeywords(): string[] {
+  return unique(
+    (SCREENING_EXTRA_KEYWORDS || [])
+      .map((item) => normalizeQueryText(item))
+      .filter(Boolean),
+  );
 }
 
 // 合并多个信号源预设。

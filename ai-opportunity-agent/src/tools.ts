@@ -4,6 +4,7 @@ import {
   BUDGET_PATTERNS,
   buildSearchQuery,
   getKeywordSubscription,
+  getSignalSourceProfile,
   MATURITY_SIGNALS,
   mergeSourceProfiles,
   SCENARIO_RULES,
@@ -976,41 +977,75 @@ function evaluateHotlineSearchResult(input: {
 }
 
 function isAllowedBySourceProfiles(domain: string, sourceProfileIds: string[]): boolean {
+  if (sourceProfileIds.length === 0) return true;
   if (!domain) return false;
   const lowerDomain = domain.toLowerCase();
-  const allowGovernment = sourceProfileIds.includes("government_portals") || sourceProfileIds.includes("official_mixed");
-  const allowProcurement = sourceProfileIds.includes("procurement_portals") || sourceProfileIds.includes("official_mixed");
-  const allowTrading = sourceProfileIds.includes("trading_platforms") || sourceProfileIds.includes("official_mixed");
+  return sourceProfileIds.some((profileId) => {
+    const profile = getSignalSourceProfile(profileId);
+    if (!profile) return false;
 
-  if (allowGovernment && lowerDomain.endsWith(".gov.cn")) return true;
-  if (allowProcurement && lowerDomain.includes("ccgp")) return true;
-  if (allowTrading && lowerDomain.includes("ggzy")) return true;
+    if (
+      profile.includeDomains.some((includeDomain) =>
+        lowerDomain === includeDomain.toLowerCase() ||
+        lowerDomain.endsWith(`.${includeDomain.toLowerCase()}`),
+      )
+    ) {
+      return true;
+    }
 
-  return sourceProfileIds.length === 0;
+    return profile.searchScopes.some((scope) => matchDomainBySearchScope(lowerDomain, scope));
+  });
 }
 
 function isAllowedUrlBySourceProfiles(url: string, sourceProfileIds: string[]): boolean {
+  if (sourceProfileIds.length === 0) return true;
   const lowerUrl = url.toLowerCase();
-  if (!lowerUrl) return sourceProfileIds.length === 0;
+  if (!lowerUrl) return false;
 
-  const allowGovernment = sourceProfileIds.includes("government_portals") || sourceProfileIds.includes("official_mixed");
-  const allowProcurement = sourceProfileIds.includes("procurement_portals") || sourceProfileIds.includes("official_mixed");
-  const allowTrading = sourceProfileIds.includes("trading_platforms") || sourceProfileIds.includes("official_mixed");
+  return sourceProfileIds.some((profileId) => {
+    const profile = getSignalSourceProfile(profileId);
+    if (!profile) return false;
 
-  if (allowGovernment && lowerUrl.includes(".gov.cn")) return true;
-  if (allowProcurement && lowerUrl.includes("ccgp")) return true;
-  if (allowTrading && lowerUrl.includes("ggzy")) return true;
+    if (
+      profile.includeDomains.some((includeDomain) =>
+        lowerUrl.includes(includeDomain.toLowerCase()),
+      )
+    ) {
+      return true;
+    }
 
-  return sourceProfileIds.length === 0;
+    return profile.searchScopes.some((scope) => matchUrlBySearchScope(lowerUrl, scope));
+  });
 }
 
 function shouldUseExplicitIncludeDomains(sourceProfileIds: string[]): boolean {
-  const hasGovernmentLikeProfile =
-    sourceProfileIds.includes("government_portals") ||
-    sourceProfileIds.includes("policy_documents") ||
-    sourceProfileIds.includes("official_mixed");
+  const profiles = sourceProfileIds
+    .map((id) => getSignalSourceProfile(id))
+    .filter((item): item is NonNullable<typeof item> => !!item);
 
-  return !hasGovernmentLikeProfile;
+  const hasWildcardGovernmentScope = profiles.some((profile) =>
+    profile.searchScopes.some((scope) => scope.toLowerCase() === "site:.gov.cn"),
+  );
+
+  return !hasWildcardGovernmentScope;
+}
+
+function normalizeScopeDomain(scope: string): string {
+  return scope.replace(/^site:/i, "").trim().toLowerCase();
+}
+
+function matchDomainBySearchScope(domain: string, scope: string): boolean {
+  const normalizedScope = normalizeScopeDomain(scope);
+  if (!normalizedScope) return false;
+  if (normalizedScope === ".gov.cn") return domain.endsWith(".gov.cn");
+  return domain === normalizedScope || domain.endsWith(`.${normalizedScope}`);
+}
+
+function matchUrlBySearchScope(url: string, scope: string): boolean {
+  const normalizedScope = normalizeScopeDomain(scope);
+  if (!normalizedScope) return false;
+  if (normalizedScope === ".gov.cn") return url.includes(".gov.cn");
+  return url.includes(normalizedScope);
 }
 
 function extractPublishTime(text: string): { raw: string | null; normalized: string | null; confidence: number } {

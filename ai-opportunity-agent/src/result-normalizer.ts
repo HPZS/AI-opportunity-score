@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from "fs";
+import { join } from "path";
 import { loadRuntimeOverrides } from "./self-healing.js";
 
 type JsonRecord = Record<string, unknown>;
@@ -60,6 +62,18 @@ function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function safeNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function pickFirstNumber(...values: unknown[]): number | null {
+  for (const value of values) {
+    const resolved = safeNumber(value);
+    if (resolved !== null) return resolved;
+  }
+  return null;
+}
+
 function collectRecordArray(container: JsonRecord, key: string): JsonRecord[] {
   const value = container[key];
   return Array.isArray(value) ? value.filter(isRecord) : [];
@@ -72,6 +86,14 @@ function collectStringArray(container: JsonRecord, key: string): string[] {
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
+}
+
+function normalizeLookupKey(value: unknown): string {
+  return typeof value === "string" ? normalizeWhitespace(value).toLowerCase() : "";
+}
+
+function clampScore(value: number): number {
+  return Number(Math.max(0, Math.min(100, value)).toFixed(1));
 }
 
 function normalizeDateKey(value: unknown): string | null {
@@ -181,6 +203,338 @@ function buildGuardContext(item: JsonRecord): string {
   parts.push(...collectStringArray(item, "evidenceSummary"));
   parts.push(...collectStringArray(item, "notes"));
   return parts.join(" ");
+}
+
+function getScoreBreakdown(item: JsonRecord | null | undefined): JsonRecord {
+  return item && isRecord(item.scoreBreakdown) ? item.scoreBreakdown : {};
+}
+
+function resolveScreeningScores(
+  item: JsonRecord,
+  screeningLead?: JsonRecord | null
+): {
+  scenarioFitScore: number | null;
+  aiFitScore: number | null;
+  opportunityMaturityScore: number | null;
+  screeningScore: number | null;
+  totalScore: number | null;
+} {
+  const source = screeningLead || item;
+  const scoreBreakdown = getScoreBreakdown(source);
+
+  return {
+    scenarioFitScore: pickFirstNumber(
+      source.scenarioFitScore,
+      scoreBreakdown.scenarioFitScore
+    ),
+    aiFitScore: pickFirstNumber(
+      source.aiFitScore,
+      scoreBreakdown.aiFitScore
+    ),
+    opportunityMaturityScore: pickFirstNumber(
+      source.opportunityMaturityScore,
+      source.maturityScore,
+      scoreBreakdown.opportunityMaturityScore,
+      scoreBreakdown.maturityScore
+    ),
+    screeningScore: pickFirstNumber(
+      source.screeningScore,
+      scoreBreakdown.screeningScore,
+      scoreBreakdown.opportunityScore,
+      scoreBreakdown.baseScore
+    ),
+    totalScore: pickFirstNumber(
+      source.totalScore,
+      scoreBreakdown.totalScore,
+      scoreBreakdown.screeningScore,
+      scoreBreakdown.opportunityScore,
+      scoreBreakdown.referenceValueScore
+    ),
+  };
+}
+
+function computeRawCompositeScore(input: {
+  aiFitScore: number | null;
+  opportunityMaturityScore: number | null;
+  deepAnalysisScore: number | null;
+  fallbackScore: number | null;
+}): number | null {
+  const hasBaseScores =
+    input.aiFitScore !== null && input.opportunityMaturityScore !== null;
+  const hasDeepScore =
+    input.deepAnalysisScore !== null && input.deepAnalysisScore > 0;
+
+  if (hasBaseScores && hasDeepScore) {
+    return clampScore(
+      input.aiFitScore! * 0.4 +
+        input.opportunityMaturityScore! * 0.4 +
+        input.deepAnalysisScore! * 0.2
+    );
+  }
+
+  if (input.fallbackScore !== null) {
+    return clampScore(input.fallbackScore);
+  }
+
+  if (hasBaseScores) {
+    return clampScore(
+      input.aiFitScore! * 0.5 + input.opportunityMaturityScore! * 0.5
+    );
+  }
+
+  if (hasDeepScore) {
+    return clampScore(input.deepAnalysisScore!);
+  }
+
+  return null;
+}
+
+function upliftCompositeScore(rawScore: number | null): number | null {
+  if (rawScore === null) return null;
+  return clampScore(80 + rawScore * 0.2);
+}
+
+function buildLeadLookupKeys(item: JsonRecord): string[] {
+  const title = normalizeLookupKey(item.title);
+  const url = normalizeLookupKey(item.url);
+  const keys = [
+    title && url ? `title_url:${title}|${url}` : "",
+    url ? `url:${url}` : "",
+    title ? `title:${title}` : "",
+  ].filter(Boolean);
+  return Array.from(new Set(keys));
+}
+
+function buildLeadLookup(items: JsonRecord[]): Map<string, JsonRecord> {
+  const lookup = new Map<string, JsonRecord>();
+  for (const item of items) {
+    for (const key of buildLeadLookupKeys(item)) {
+      if (!lookup.has(key)) lookup.set(key, item);
+    }
+  }
+  return lookup;
+}
+
+function findMatchedLead(
+  item: JsonRecord,
+  lookup: Map<string, JsonRecord>
+): JsonRecord | null {
+  for (const key of buildLeadLookupKeys(item)) {
+    const matched = lookup.get(key);
+    if (matched) return matched;
+  }
+  return null;
+}
+
+function loadScreeningLeadLookup(
+  sourceScreeningTaskId: unknown
+): Map<string, JsonRecord> {
+  const taskId =
+    typeof sourceScreeningTaskId === "string" ? sourceScreeningTaskId.trim() : "";
+  if (!taskId) return new Map();
+
+  const filePath = join(
+    process.cwd(),
+    "data",
+    "screening-pool",
+    `${taskId}.json`
+  );
+
+  if (!existsSync(filePath)) return new Map();
+
+  try {
+    const raw = JSON.parse(readFileSync(filePath, "utf-8"));
+    const leads = Array.isArray(raw) ? raw.filter(isRecord) : [];
+    return buildLeadLookup(leads);
+  } catch {
+    return new Map();
+  }
+}
+
+function attachScreeningCompositeScore(item: JsonRecord): JsonRecord {
+  const scores = resolveScreeningScores(item);
+  const rawCompositeScore = computeRawCompositeScore({
+    aiFitScore: scores.aiFitScore,
+    opportunityMaturityScore: scores.opportunityMaturityScore,
+    deepAnalysisScore: pickFirstNumber(item.deepAnalysisScore, getScoreBreakdown(item).deepAnalysisScore),
+    fallbackScore: pickFirstNumber(
+      item.rawCompositeScore,
+      item.compositeScore,
+      scores.totalScore,
+      scores.screeningScore
+    ),
+  });
+  const compositeScore = upliftCompositeScore(rawCompositeScore);
+
+  if (compositeScore === null) return item;
+  return {
+    ...item,
+    rawCompositeScore,
+    compositeScore,
+  };
+}
+
+function mergeScreeningSnapshot(
+  lead: JsonRecord,
+  screeningLead: JsonRecord | null
+): JsonRecord | undefined {
+  const existingSnapshot = isRecord(lead.screeningSnapshot)
+    ? { ...lead.screeningSnapshot }
+    : null;
+  if (!existingSnapshot && !screeningLead) return undefined;
+
+  const scores = resolveScreeningScores(lead, screeningLead || undefined);
+  const nextSnapshot: JsonRecord = existingSnapshot || {};
+
+  nextSnapshot.scenarioFitScore = pickFirstNumber(
+    nextSnapshot.scenarioFitScore,
+    scores.scenarioFitScore
+  );
+  nextSnapshot.aiFitScore = pickFirstNumber(
+    nextSnapshot.aiFitScore,
+    scores.aiFitScore
+  );
+  nextSnapshot.opportunityMaturityScore = pickFirstNumber(
+    nextSnapshot.opportunityMaturityScore,
+    scores.opportunityMaturityScore
+  );
+  nextSnapshot.screeningScore = pickFirstNumber(
+    nextSnapshot.screeningScore,
+    scores.screeningScore
+  );
+  nextSnapshot.totalScore = pickFirstNumber(
+    nextSnapshot.totalScore,
+    scores.totalScore
+  );
+
+  return nextSnapshot;
+}
+
+function normalizeInvestigationLead(
+  lead: JsonRecord,
+  screeningLookup: Map<string, JsonRecord>
+): JsonRecord {
+  const screeningLead = findMatchedLead(lead, screeningLookup);
+  const screeningScores = resolveScreeningScores(lead, screeningLead || undefined);
+  const deepAnalysis = isRecord(lead.deepAnalysis) ? { ...lead.deepAnalysis } : {};
+  const deepAnalysisScore = pickFirstNumber(
+    deepAnalysis.deepAnalysisScore,
+    deepAnalysis.evidenceStrengthScore,
+    lead.deepAnalysisScore,
+    lead.evidenceStrengthScore
+  );
+  const rawCompositeScore = computeRawCompositeScore({
+    aiFitScore: screeningScores.aiFitScore,
+    opportunityMaturityScore: screeningScores.opportunityMaturityScore,
+    deepAnalysisScore,
+    fallbackScore: pickFirstNumber(
+      lead.rawCompositeScore,
+      lead.compositeScore,
+      screeningScores.totalScore,
+      screeningScores.screeningScore,
+      deepAnalysisScore
+    ),
+  });
+  const compositeScore = upliftCompositeScore(rawCompositeScore);
+
+  const nextLead: JsonRecord = {
+    ...lead,
+    deepAnalysis,
+  };
+
+  if (compositeScore !== null) {
+    nextLead.rawCompositeScore = rawCompositeScore;
+    nextLead.compositeScore = compositeScore;
+  }
+
+  const screeningSnapshot = mergeScreeningSnapshot(nextLead, screeningLead);
+  if (screeningSnapshot) {
+    nextLead.screeningSnapshot = screeningSnapshot;
+  }
+
+  return nextLead;
+}
+
+function getRecommendationLookupKey(item: JsonRecord): string {
+  const leadId = normalizeLookupKey(item.leadId);
+  if (leadId) return `lead:${leadId}`;
+  const title = normalizeLookupKey(item.title);
+  return title ? `title:${title}` : "";
+}
+
+function buildInvestigationLeadLookup(
+  leads: JsonRecord[]
+): Map<string, JsonRecord> {
+  const lookup = new Map<string, JsonRecord>();
+  for (const lead of leads) {
+    const leadId = normalizeLookupKey(lead.leadId);
+    const title = normalizeLookupKey(lead.title);
+    if (leadId) lookup.set(`lead:${leadId}`, lead);
+    if (title) lookup.set(`title:${title}`, lead);
+  }
+  return lookup;
+}
+
+function getInvestigationSortScore(item: JsonRecord): number {
+  return (
+    pickFirstNumber(
+      item.compositeScore,
+      isRecord(item.deepAnalysis) ? item.deepAnalysis.deepAnalysisScore : null,
+      item.deepAnalysisScore
+    ) || 0
+  );
+}
+
+function normalizeRankedRecommendations(
+  parsedResult: JsonRecord,
+  investigatedLeads: JsonRecord[]
+): JsonRecord[] {
+  const leadLookup = buildInvestigationLeadLookup(investigatedLeads);
+  const existingRecommendations = collectRecordArray(
+    parsedResult,
+    "rankedRecommendations"
+  );
+
+  const normalized =
+    existingRecommendations.length > 0
+      ? existingRecommendations.map((item) => {
+          const matched = leadLookup.get(getRecommendationLookupKey(item));
+          if (!matched) return item;
+          return {
+            ...item,
+            compositeScore: pickFirstNumber(item.compositeScore, matched.compositeScore),
+            deepAnalysisScore: pickFirstNumber(
+              item.deepAnalysisScore,
+              isRecord(matched.deepAnalysis)
+                ? matched.deepAnalysis.deepAnalysisScore
+                : null,
+              matched.deepAnalysisScore
+            ),
+            finalRecommendation:
+              (typeof item.finalRecommendation === "string" && item.finalRecommendation.trim()) ||
+              (typeof matched.finalRecommendation === "string"
+                ? matched.finalRecommendation
+                : ""),
+          };
+        })
+      : investigatedLeads.map((lead) => ({
+          rank: 0,
+          leadId: lead.leadId,
+          title: lead.title,
+          finalRecommendation: lead.finalRecommendation,
+          deepAnalysisScore: pickFirstNumber(
+            isRecord(lead.deepAnalysis) ? lead.deepAnalysis.deepAnalysisScore : null,
+            lead.deepAnalysisScore
+          ),
+          compositeScore: lead.compositeScore,
+        }));
+
+  return normalized
+    .sort((left, right) => getInvestigationSortScore(right) - getInvestigationSortScore(left))
+    .map((item, index) => ({
+      ...item,
+      rank: index + 1,
+    }));
 }
 
 function collectGuardFlags(
@@ -473,8 +827,9 @@ function normalizeScreeningResult(parsedResult: JsonRecord): JsonRecord {
       }
       normalizedItem.withinTimeWindow = normalizedWithinTimeWindow;
       normalizedItem.timeWindowStatus = computeTimeWindowStatus(normalizedWithinTimeWindow);
-      const targetBucket = resolveBucket(normalizedItem, bucketKey, normalizedWithinTimeWindow);
-      normalizedBuckets[targetBucket].push(normalizedItem);
+      const scoredItem = attachScreeningCompositeScore(normalizedItem);
+      const targetBucket = resolveBucket(scoredItem, bucketKey, normalizedWithinTimeWindow);
+      normalizedBuckets[targetBucket].push(scoredItem);
     }
   }
 
@@ -506,7 +861,30 @@ function normalizeScreeningResult(parsedResult: JsonRecord): JsonRecord {
   };
 }
 
+function normalizeInvestigationResult(parsedResult: JsonRecord): JsonRecord {
+  const screeningLookup = loadScreeningLeadLookup(parsedResult.sourceScreeningTaskId);
+  const investigatedLeads = collectRecordArray(parsedResult, "investigatedLeads").map((lead) =>
+    normalizeInvestigationLead(lead, screeningLookup)
+  );
+  const rankedRecommendations = normalizeRankedRecommendations(
+    parsedResult,
+    investigatedLeads
+  );
+
+  const summary = isRecord(parsedResult.summary) ? { ...parsedResult.summary } : {};
+  summary.investigatedLeadCount = investigatedLeads.length;
+
+  return {
+    ...parsedResult,
+    summary,
+    investigatedLeads,
+    rankedRecommendations,
+  };
+}
+
 export function normalizeParsedTaskResult(taskType: string, parsedResult: unknown): unknown {
-  if (taskType !== "screening" || !isRecord(parsedResult)) return parsedResult;
-  return normalizeScreeningResult(parsedResult);
+  if (!isRecord(parsedResult)) return parsedResult;
+  if (taskType === "screening") return normalizeScreeningResult(parsedResult);
+  if (taskType === "investigation") return normalizeInvestigationResult(parsedResult);
+  return parsedResult;
 }
