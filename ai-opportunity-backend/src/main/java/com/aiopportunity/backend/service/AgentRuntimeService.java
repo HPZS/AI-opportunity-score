@@ -18,6 +18,7 @@ import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.concurrent.CompletableFuture;
 
 import org.springframework.stereotype.Service;
 
@@ -72,6 +73,7 @@ public class AgentRuntimeService {
     private static final String SCREENING_OPPORTUNITY_CONST = "SCREENING_OPPORTUNITY_TYPE_CONFIG";
     private static final String SCREENING_SOURCE_PROFILE_CONST = "SCREENING_SOURCE_PROFILE_CONFIG";
     private static final String SCREENING_EXTRA_KEYWORDS_CONST = "SCREENING_EXTRA_KEYWORDS";
+    private static final long RUNNING_IMPORT_POLL_INTERVAL_MS = 5_000L;
 
     private final AgentRuntimeProperties properties;
     private final AppStorageProperties storageProperties;
@@ -89,6 +91,8 @@ public class AgentRuntimeService {
     private volatile Instant lastImportedAt;
     private volatile Boolean lastImportSucceeded;
     private volatile String lastImportMessage;
+    private volatile Path lastImportedResultFile;
+    private volatile Instant lastImportedResultModifiedAt;
     private volatile Boolean autoInvestigationScheduled;
     private volatile RunExecutionContext currentRunContext;
 
@@ -383,25 +387,79 @@ public class AgentRuntimeService {
         );
     }
 
-    private TaskImportOutcome importLatestTaskResultForCompletedRun(String taskType, Instant runStartedAt) {
-        Path latestResultFile = resolveLatestTaskResultFile(taskType, runStartedAt);
-        if (latestResultFile == null) {
-            return new TaskImportOutcome(null, false, "任务已结束，但未找到可导入的结果文件。");
-        }
-
-        String taskKey = stripExtension(latestResultFile.getFileName().toString());
+    private TaskImportOutcome importTaskResultFile(Path taskResultFile) {
+        String taskKey = stripExtension(taskResultFile.getFileName().toString());
 
         try {
             ImportTaskResultResponse response = taskResultImportService.importTaskResult(
-                    new ImportTaskResultRequest(taskKey, latestResultFile.toString())
+                    new ImportTaskResultRequest(taskKey, taskResultFile.toString())
             );
+            rememberImportedResultFile(taskResultFile);
             return new TaskImportOutcome(
                     response.taskKey(),
                     true,
                     "已自动导入数据库，导入线索 " + response.importedLeadCount() + " 条。"
             );
         } catch (Exception ex) {
+            rememberImportedResultFile(taskResultFile);
             return new TaskImportOutcome(taskKey, false, "自动导入失败: " + ex.getMessage());
+        }
+    }
+
+    private TaskImportOutcome importLatestTaskResultForCompletedRun(String taskType, Instant runStartedAt) {
+        Path latestResultFile = resolveLatestTaskResultFile(taskType, runStartedAt);
+        if (latestResultFile == null) {
+            return new TaskImportOutcome(null, false, "任务已结束，但未找到可导入的结果文件。");
+        }
+
+        return importTaskResultFile(latestResultFile);
+    }
+
+    private void pollAndImportWhileRunning(Process process, RunExecutionContext context, Instant runStartedAt) {
+        while (process.isAlive()) {
+            try {
+                Path latestResultFile = resolveLatestTaskResultFile(context.taskType(), runStartedAt);
+                if (latestResultFile != null && shouldImportUpdatedResultFile(latestResultFile)) {
+                    TaskImportOutcome importOutcome = importTaskResultFile(latestResultFile);
+                    markImportResult(
+                            importOutcome.taskKey(),
+                            importOutcome.success(),
+                            "运行中增量导入: " + importOutcome.message()
+                    );
+                }
+                Thread.sleep(RUNNING_IMPORT_POLL_INTERVAL_MS);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                return;
+            } catch (Exception ex) {
+                markImportResult(lastImportedTaskKey, false, "运行中自动导入失败: " + ex.getMessage());
+                try {
+                    Thread.sleep(RUNNING_IMPORT_POLL_INTERVAL_MS);
+                } catch (InterruptedException interruptedException) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
+    }
+
+    private boolean shouldImportUpdatedResultFile(Path taskResultFile) {
+        Instant modifiedAt = lastModifiedTime(taskResultFile);
+        synchronized (processLock) {
+            if (lastImportedResultFile == null || lastImportedResultModifiedAt == null) {
+                return true;
+            }
+            if (!lastImportedResultFile.equals(taskResultFile)) {
+                return true;
+            }
+            return modifiedAt.isAfter(lastImportedResultModifiedAt);
+        }
+    }
+
+    private void rememberImportedResultFile(Path taskResultFile) {
+        synchronized (processLock) {
+            lastImportedResultFile = taskResultFile;
+            lastImportedResultModifiedAt = lastModifiedTime(taskResultFile);
         }
     }
 
@@ -416,13 +474,31 @@ public class AgentRuntimeService {
             autoInvestigationScheduled = false;
         }
 
-        if (completed.exitValue() != 0) {
-            markImportResult(null, false, "任务退出码为 " + completed.exitValue() + "，未自动导入数据库。");
+        TaskImportOutcome importOutcome = importLatestTaskResultForCompletedRun(context.taskType(), runStartedAt);
+        if (importOutcome.success()) {
+            String completionMessage = completed.exitValue() == 0
+                    ? importOutcome.message()
+                    : "任务退出码为 " + completed.exitValue() + "，但已保留并导入最近一次可保存结果。";
+            markImportResult(importOutcome.taskKey(), true, completionMessage);
+        } else if (completed.exitValue() != 0) {
+            if (Boolean.TRUE.equals(lastImportSucceeded) && lastImportedTaskKey != null) {
+                markImportResult(
+                        lastImportedTaskKey,
+                        true,
+                        "任务退出码为 " + completed.exitValue() + "，但运行中已导入最近一次可保存结果。"
+                );
+                return;
+            }
+            markImportResult(
+                    importOutcome.taskKey(),
+                    false,
+                    "任务退出码为 " + completed.exitValue() + "，且最终导入失败: " + importOutcome.message()
+            );
+            return;
+        } else {
+            markImportResult(importOutcome.taskKey(), false, importOutcome.message());
             return;
         }
-
-        TaskImportOutcome importOutcome = importLatestTaskResultForCompletedRun(context.taskType(), runStartedAt);
-        markImportResult(importOutcome.taskKey(), importOutcome.success(), importOutcome.message());
 
         if (!importOutcome.success()
                 || !"screening".equalsIgnoreCase(context.taskType())
@@ -503,11 +579,16 @@ public class AgentRuntimeService {
         currentLogFile = logFile;
         currentRunContext = context;
         autoInvestigationScheduled = "screening".equalsIgnoreCase(request.taskType()) && runInvestigationAfterScreening;
+        lastImportedResultFile = null;
+        lastImportedResultModifiedAt = null;
         if (clearLastImportState) {
+            lastImportedTaskKey = null;
+            lastImportedAt = null;
             lastImportSucceeded = null;
             lastImportMessage = runningMessage;
         }
 
+        CompletableFuture.runAsync(() -> pollAndImportWhileRunning(process, context, runStartedAt));
         process.onExit().thenAccept(completed -> handleProcessExit(completed, context, runStartedAt));
 
         return new AgentRuntimeStartResponse(

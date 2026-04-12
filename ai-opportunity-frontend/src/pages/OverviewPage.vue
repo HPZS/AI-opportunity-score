@@ -20,6 +20,19 @@ const selectedStatus = ref('')
 const isLoading = ref(false)
 const errorMessage = ref('')
 const leads = ref<PagedResponse<LeadListItem> | null>(null)
+const totalLeadCount = ref<number | null>(null)
+
+const hasActiveFilters = computed(
+  () =>
+    Boolean(
+      keyword.value.trim() ||
+        selectedLeadCategory.value ||
+        selectedPoolTier.value ||
+        selectedStatus.value,
+    ),
+)
+
+const currentFilteredCount = computed(() => leads.value?.totalElements ?? 0)
 
 const heroStats = computed(() => {
   const items = leads.value?.content ?? []
@@ -28,9 +41,27 @@ const heroStats = computed(() => {
   const trackedCount = items.filter((item) => item.shouldEnterPool).length
 
   return [
-    { label: '高优先线索', value: String(highScoreCount), hint: 'AI 综合分 92 以上' },
-    { label: '待销售动作', value: String(actionableCount), hint: '建议优先跟进' },
-    { label: '已入池线索', value: String(trackedCount), hint: '当前进入候选池' },
+    {
+      label: '总线索',
+      value: formatCount(totalLeadCount.value),
+      hint: '数据库中累计沉淀的全部销售线索',
+      emphasis: true,
+    },
+    {
+      label: '高优先线索',
+      value: formatCount(highScoreCount),
+      hint: '当前列表中 AI 综合分 92 以上',
+    },
+    {
+      label: '待销售动作',
+      value: formatCount(actionableCount),
+      hint: '当前列表中建议优先跟进',
+    },
+    {
+      label: '已入池线索',
+      value: formatCount(trackedCount),
+      hint: '当前列表中已进入候选池',
+    },
   ]
 })
 
@@ -38,19 +69,32 @@ onMounted(async () => {
   await loadLeads()
 })
 
+function formatCount(value: number | null | undefined) {
+  return new Intl.NumberFormat('zh-CN').format(value ?? 0)
+}
+
+function buildLeadQuery(size: number) {
+  return {
+    keyword: keyword.value,
+    leadCategory: selectedLeadCategory.value,
+    poolEntryTier: selectedPoolTier.value,
+    status: selectedStatus.value,
+    page: 0,
+    size,
+  }
+}
+
 async function loadLeads() {
   isLoading.value = true
   errorMessage.value = ''
 
   try {
-    leads.value = await getLeads({
-      keyword: keyword.value,
-      leadCategory: selectedLeadCategory.value,
-      poolEntryTier: selectedPoolTier.value,
-      status: selectedStatus.value,
-      page: 0,
-      size: 20,
-    })
+    const filteredPromise = getLeads(buildLeadQuery(20))
+    const totalPromise = hasActiveFilters.value ? getLeads({ page: 0, size: 1 }) : Promise.resolve(null)
+    const [filteredLeads, totalLeads] = await Promise.all([filteredPromise, totalPromise])
+
+    leads.value = filteredLeads
+    totalLeadCount.value = totalLeads?.totalElements ?? filteredLeads.totalElements
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '线索加载失败'
   } finally {
@@ -60,33 +104,38 @@ async function loadLeads() {
 
 function aiOpinion(item: LeadListItem) {
   if ((item.compositeScore ?? 0) >= 92) {
-    return '高优先级机会，AI 判断具备较强销售推进价值。'
+    return '这是高优先级机会，AI 判断已经具备较强的销售推进价值。'
   }
 
   if ((item.compositeScore ?? 0) >= 88) {
-    return '具备持续跟进价值，建议边补证据边维持触达。'
+    return '这条线索值得持续跟进，建议边补证据边维持触达。'
   }
 
-  return '当前更适合观察，先盯预算和正式采购信号。'
+  return '当前更适合继续观察，先盯预算、正式采购和落地信号。'
 }
 
 function aiSuggestion(item: LeadListItem) {
   if (item.status === '待跟进') {
-    return '先确认客户关系和采购窗口，再推进首次触达。'
+    return '先确认客户关系和采购窗口，再推进首次有效触达。'
   }
 
   if (item.poolEntryTier === '观察入池') {
-    return '跟踪采购意向、预算节点和正式公告。'
+    return '继续跟踪采购意向、预算节点和正式公告。'
   }
 
-  return '保留为参考线索，不建议投入过多售前资源。'
+  return '先保留为参考线索，不建议投入过多售前资源。'
 }
 </script>
 
 <template>
   <main class="page">
     <section class="hero-card hero-card--metrics">
-      <article v-for="item in heroStats" :key="item.label" class="hero-metric hero-metric--dense">
+      <article
+        v-for="item in heroStats"
+        :key="item.label"
+        class="hero-metric hero-metric--dense"
+        :class="{ 'hero-metric--primary': item.emphasis }"
+      >
         <span>{{ item.label }}</span>
         <strong>{{ item.value }}</strong>
         <small>{{ item.hint }}</small>
@@ -96,8 +145,8 @@ function aiSuggestion(item: LeadListItem) {
     <section class="panel sales-panel">
       <div class="panel__header">
         <div>
-          <p class="section-eyebrow">Lead Pool</p>
-          <h2>销售线索池</h2>
+          <p class="section-eyebrow">Sales Preview</p>
+          <h2>销售线索预览</h2>
         </div>
         <button class="button-secondary" type="button" @click="loadLeads">
           刷新列表
@@ -149,8 +198,14 @@ function aiSuggestion(item: LeadListItem) {
       <p v-if="errorMessage" class="alert-error">{{ errorMessage }}</p>
 
       <div class="list-meta">
-        <span>{{ isLoading ? '加载中...' : `当前共 ${leads?.totalElements ?? 0} 条线索` }}</span>
-        <span>点击卡片查看 AI 详情与全部来源链接</span>
+        <span>
+          {{
+            isLoading
+              ? '加载中...'
+              : `当前筛选 ${formatCount(currentFilteredCount)} 条，总线索 ${formatCount(totalLeadCount)} 条`
+          }}
+        </span>
+        <span>点击卡片可查看 AI 解读、来源链接和销售建议</span>
       </div>
 
       <div class="lead-grid">

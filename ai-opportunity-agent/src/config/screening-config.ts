@@ -2,28 +2,27 @@ import {
   getScreeningExtraKeywords,
   getScreeningOpportunityTypeSelection,
   getScreeningSourceProfileSelection,
+  getScreeningTopicExecutionPlans,
 } from "./signal-config.js";
 
-// 初筛任务兼容的任务别名。
-// `collect_and_screen` 是历史命名，后续统一收口到 `screening`。
 export const SCREENING_TASK_ALIASES = [
   "screening",
   "collect_and_screen",
 ] as const;
 
-// 初筛任务的核心执行配置。
-// 用户层只配置“目标入池数量”。
 export interface ScreeningTaskConfig {
-  // 目标入池数量。
-  // 只有 shouldEnterPool=true 的线索才计入这个数量。
   targetPoolEntryCount: number;
 }
 
-// 初筛默认配置。
-// 当前用户只需要关心要入池多少条。
 export const SCREENING_DEFAULT_CONFIG: ScreeningTaskConfig = {
   targetPoolEntryCount: 2,
 };
+
+export function getScreeningMaxSupervisorAttempts(
+  config: ScreeningTaskConfig = SCREENING_DEFAULT_CONFIG,
+): number {
+  return Math.max(4, Math.min(10, config.targetPoolEntryCount + 3));
+}
 
 function getMaxSearchRoundsPerAttempt(config: ScreeningTaskConfig): number {
   return Math.max(6, Math.min(20, config.targetPoolEntryCount));
@@ -31,6 +30,28 @@ function getMaxSearchRoundsPerAttempt(config: ScreeningTaskConfig): number {
 
 function getMaxResultsPerQuery(config: ScreeningTaskConfig): number {
   return Math.max(10, Math.min(20, config.targetPoolEntryCount));
+}
+
+function buildScreeningTopicExecutionPlanText(): string {
+  const plans = getScreeningTopicExecutionPlans();
+  if (plans.length === 0) {
+    return "当前未配置可用主题，请先至少启用一个主题。";
+  }
+
+  if (plans.length === 1) {
+    const [plan] = plans;
+    return [
+      "当前仅启用单主题搜索：",
+      `1. ${plan.label} | subscription_id=${plan.subscriptionId} | 推荐来源=${plan.sourceLabels.join("、") || "无"} | 核心词=${plan.keywords.join("、") || "无"}`,
+    ].join("\n");
+  }
+
+  return [
+    "多主题轮询计划：",
+    ...plans.map((plan, index) =>
+      `${index + 1}. ${plan.label} | subscription_id=${plan.subscriptionId} | 推荐来源=${plan.sourceLabels.join("、") || "无"} | 核心词=${plan.keywords.join("、") || "无"}`,
+    ),
+  ].join("\n");
 }
 
 export const SCREENING_RESULT_TEMPLATE = `{
@@ -67,8 +88,6 @@ export const SCREENING_RESULT_TEMPLATE = `{
   "notes": []
 }`;
 
-// 生成给模型看的“初筛任务规则说明”。
-// 这里不是程序逻辑本身，而是约束模型如何执行、何时算成功。
 export function buildScreeningTaskOutputRequirements(
   config: ScreeningTaskConfig = SCREENING_DEFAULT_CONFIG,
 ): string {
@@ -77,62 +96,44 @@ export function buildScreeningTaskOutputRequirements(
   const typeSelection = getScreeningOpportunityTypeSelection();
   const sourceSelection = getScreeningSourceProfileSelection();
   const extraKeywords = getScreeningExtraKeywords();
-  const selectionModeText = typeSelection.mode === "single" ? "单类型搜索" : "多类型轮询搜索";
-  const configuredTypeText = typeSelection.labels.join("、");
-  const configuredIdText = typeSelection.subscriptionIds.join(", ");
-  const configuredSourceText = sourceSelection.labels.join("、");
-  const configuredSourceIdText = sourceSelection.sourceProfileIds.join(", ");
-  const configuredExtraKeywordText =
-    extraKeywords.length > 0 ? extraKeywords.join("、") : "无";
+  const selectionModeText = typeSelection.mode === "single" ? "单主题搜索" : "多主题轮询";
+  const topicExecutionPlanText = buildScreeningTopicExecutionPlanText();
 
-  return (
-    "输出要求:\n" +
-    "1. 本任务是初筛任务，目标是形成候选池，不要直接把结论写成最终成交判断。\n" +
-    `2. 本轮目标是成功进入候选池的机会数量达到 ${config.targetPoolEntryCount} 条。这里的“成功进入候选池”是指 shouldEnterPool=true，且应计入 summary.poolEntryCount。\n` +
-    "2.1 shouldEnterPool 表示“进入候选池持续跟踪”，不等同于“必须马上销售推进”。凡方向正确、时间窗有效、与目标场景匹配的机会，即使暂缺预算或正式采购说明，也可以入池。\n" +
-    "2.2 对入池线索必须补充 poolEntryTier，使用以下分层：优先跟进、观察入池、信号跟踪。优先跟进表示已有较强执行信号；观察入池表示方向明确但证据仍需补充；信号跟踪表示主体已有持续建设意图，适合放入池内长期观察。\n" +
-    "3. 目标入池数量只是最低达标线，不是输出上限；凡本轮已确认 shouldEnterPool=true 的线索，都应保留在 currentOpportunities 中，不得为了贴合目标数量而裁剪。\n" +
-    `4. 单次完整尝试内，搜索应尽量分轮进行，建议最多 ${maxSearchRoundsPerAttempt} 轮，每轮单次 search_web 的 max_results 建议不超过 ${maxResultsPerQuery}。\n` +
-    "5. 每次调用 search_web 时，都应显式传入与本任务一致的 time_window_days，避免后续补搜时偏离时间窗。\n" +
-    `6. 当前机会类型配置为：${selectionModeText}。已启用的 subscription_id 为：${configuredIdText}；对应机会类型为：${configuredTypeText}。\n` +
-    "7. 必须遵守当前机会类型配置执行搜索：\n" +
-    (typeSelection.mode === "single"
-      ? `   - 仅允许围绕 subscription_id=${configuredIdText} 执行搜索与补搜，不要擅自切到其他机会类型。\n`
-      : "   - 必须按已启用 subscription_id 逐类轮询搜索，不要只盯住其中一类机会；至少完成一轮后，才允许回到高潜类型补搜。\n") +
-    `8. 当前默认信号源配置为：${configuredSourceText || "未配置"}。对应 source_profile_ids 为：${configuredSourceIdText || "无"}。\n` +
-    "8.1 调用 search_web 时，应优先显式传入当前已配置的 source_profile_ids，不要遗漏当前轮指定来源。\n" +
-    "8.2 搜索必须按来源类型拆轮，不要每一轮都混用 government_portals、procurement_portals、trading_platforms。应优先分别执行：\n" +
-    "   - 招采轮：source_profile_ids 仅使用 procurement_portals + trading_platforms，query 聚焦“当前轮机会类型主题词 + 公告体裁词”，例如运营服务 / 运维服务 / 采购公告 / 招标公告 / 采购需求。\n" +
-    "   - 政府官网轮：source_profile_ids 仅使用 government_portals，query 聚焦“当前轮机会类型主题词 + 前置信号词”，例如服务项目 / 采购意向 / 建设方案 / 升级改造 / 需求征集 / 立项。\n" +
-    "   - 只有拆轮召回明显不足时，才允许混合源补搜；混合补搜也必须保持当前轮 subscription_id 对应的主题一致。\n" +
-    `9. 当前额外补充关键词为：${configuredExtraKeywordText}。\n` +
-    "9.1 如果已配置额外补充关键词，调用 search_web 时应优先通过 extra_keywords 传入，不要把所有扩展词直接堆进 query。\n" +
-    `10. 如果 summary.poolEntryCount 小于 ${config.targetPoolEntryCount}，本次任务应视为未达成目标，必须在 notes 中明确写出“未达到候选池目标数量”。\n` +
-    "11. 如果当前入池数量还未达到目标，不要主动结束，应继续补搜，直到达到目标数量或收到用户手动终止。\n" +
-    "12. 如果本轮已经搜索到超过目标数量的可入池机会，应将这些 shouldEnterPool=true 的机会全部保留输出并入池，不得只保留等于目标数量的前几条。\n" +
-    "13. 最终请输出结构化 JSON。\n" +
-    "14. 凡涉及 shouldEnterPool、scenarioFitScore、aiFitScore、opportunityMaturityScore/maturityScore、screeningScore、totalScore、publishTime、是否推荐跟进，必须严格以工具输出为准，不得自行改写。\n" +
-    "15. 如果工具结果显示线索不在时间窗内，最终结果必须明确标记。\n" +
-    "16. 如果抓取对象是 PDF 且无法解析正文，必须明确标注“待补抓 PDF 正文”，不要把乱码当正文分析。\n" +
-    "17. 如果抓取对象是 PDF 且只有正文内日期、没有权威公告页发布时间，不要把正文日期直接当作最终发布时间；应允许保留为时间待核验状态。\n" +
-    "18. 最终结果必须分层输出 currentOpportunities、historicalCases、policySignals、outOfWindowLeads，不要把不同语义的线索混在一个数组里。\n" +
-    "19. historicalCases 和 policySignals 不能写进当前商机主列表。\n" +
-    "20. 如果 isActionableNow=false，则结论里不能写成建议当前跟进；但只要 shouldEnterPool=true，仍可作为观察型或信号型机会进入候选池。\n" +
-    "21. 来自政府官网或政策来源的线索，如果正文已出现明确采购、立项、建设方案、升级改造等执行信号，可以保留为 currentOpportunities，不要一律降为 policySignals。\n" +
-    "22. 每条线索尽量保留 leadCategory、opportunityStage、isActionableNow、poolEntryTier、opportunitySignalClass、scoreBreakdown、categoryReason。\n" +
-    "23. 如果 publishTime 为空，但 PDF 正文候选日期明显早于当前时间窗，该线索可以保留为待核验参考，但不得直接 shouldEnterPool=true。\n" +
-    "24. 对同一条线索，优先先调用 extract_signal，再把 extract_signal 返回的 publishTime、publishTimeRaw、publishTimeConfidence、normalizedTitle 继续传给 screen_opportunity 和最终结果，不要丢字段。\n" +
-    "25. 如果标题只是“项目编号”“一、服务项目背景”“采购需求”“招标文件”等占位标题，不得直接作为最终商机标题或直接入池，必须优先补正式项目名称。\n" +
-    "26. 对“预算公开/部门预算/单位预算/政府采购支出表”类文件，如缺少独立采购公告、采购意向、需求征集或立项批复，不得 shouldEnterPool=true；可保留为待观察线索或 policySignals。\n" +
-    "27. 输出结构优先参考以下模板：\n" +
-    "```json\n" +
-    SCREENING_RESULT_TEMPLATE +
-    "\n```"
-  );
+  return [
+    "输出要求:",
+    "1. 本任务是初筛任务，目标是形成候选池，不要直接把结论写成最终成单判断。",
+    `2. 本轮目标是让 shouldEnterPool=true 的线索数量达到 ${config.targetPoolEntryCount} 条，并把这个数量写入 summary.poolEntryCount。`,
+    "3. 已确认可入池的线索全部保留，不要为了贴合目标数量而截断结果。",
+    `4. 单次完整尝试内建议最多进行 ${maxSearchRoundsPerAttempt} 轮搜索；每次 search_web 的 max_results 建议不超过 ${maxResultsPerQuery}。`,
+    "5. 每次调用 search_web 时都必须显式传入与当前任务一致的 time_window_days。",
+    `6. 当前主题模式: ${selectionModeText}。已启用 subscription_id: ${typeSelection.subscriptionIds.join(", ")}。`,
+    `7. 当前默认信号源: ${sourceSelection.sourceProfileIds.join(", ") || "无"}。默认补充关键词: ${extraKeywords.join("、") || "无"}。`,
+    "8. 多主题模式下，必须逐主题轮询执行。一次 search_web 只允许服务当前主题，不得把多个主题的关键词混在同一条 query 中。",
+    "9. 开启多个主题时，每个主题的查询逻辑必须与单主题模式一致；差别只在于调度器会按主题轮询多跑几遍。",
+    "10. 如果当前正在处理某个 subscription_id，则 query、source_profile_ids、extra_keywords 都只能围绕这个主题，不得跨主题串词。",
+    "11. 多主题轮询时，应先按主题依次完成第一轮，再决定哪些主题需要进入下一轮补搜；不要连续死盯单个主题。",
+    "12. source_profile_ids 必须优先使用当前主题自己的推荐来源，不要把全局所有来源一次性混在一起。",
+    "13. 招采来源和政府官网来源应拆开搜索。只有拆开搜索召回不足时，才允许做同主题的补充混搜。",
+    "14. 最终必须输出完整的结构化 JSON，不要只输出增量说明。",
+    "15. 最终结果必须分层输出 currentOpportunities、historicalCases、policySignals、outOfWindowLeads，不能混在一起。",
+    "16. historicalCases 和 policySignals 不能写入当前机会主列表。",
+    "17. 如果线索没有明确执行信号，只能降级为政策信号、观察线索或历史线索，不能强行入池。",
+    "18. 如果工具结果显示线索不在时间窗内，最终结果必须明确标记。",
+    "19. 如果抓取对象是 PDF 且无法解析正文，必须明确标注“待补抓 PDF 正文”，不要把乱码当正文分析。",
+    "20. 如果 PDF 只有正文日期、没有权威公告页发布时间，不要直接把正文日期当最终发布时间。",
+    "21. 对同一条线索，优先先调用 extract_signal，再把 extract_signal 返回的发布时间、标题规范化结果继续传给 screen_opportunity 和最终结果。",
+    "22. 预算公开、部门预算、支出表这类文件，如果缺少独立采购公告、采购意向、需求征集或立项批复，不得 shouldEnterPool=true。",
+    "23. 凡涉及 shouldEnterPool、scoreBreakdown、publishTime、recommendedFollowUp 等字段，必须以工具输出为准，不得自行改写。",
+    "24. 如未达到目标数量，必须在 notes 中明确写出“未达到候选池目标数量”。",
+    "25. 输出结构优先参考以下模板:",
+    "```json",
+    SCREENING_RESULT_TEMPLATE,
+    "```",
+    "",
+    topicExecutionPlanText,
+  ].join("\n");
 }
 
-// 生成运行时摘要，主要用于把关键执行参数直接写进任务消息，
-// 避免模型不知道本轮的目标数量和停止标准。
 export function buildScreeningExecutionSummary(
   config: ScreeningTaskConfig = SCREENING_DEFAULT_CONFIG,
 ): string {
@@ -141,12 +142,12 @@ export function buildScreeningExecutionSummary(
   const typeSelection = getScreeningOpportunityTypeSelection();
   const sourceSelection = getScreeningSourceProfileSelection();
   const extraKeywords = getScreeningExtraKeywords();
-  const selectionModeText = typeSelection.mode === "single" ? "单类型搜索" : "多类型轮询";
+  const topicExecutionPlanText = buildScreeningTopicExecutionPlanText();
 
   return [
     "初筛执行配置:",
     `- 目标入池数量: ${config.targetPoolEntryCount}`,
-    `- 机会类型模式: ${selectionModeText}`,
+    `- 机会类型模式: ${typeSelection.mode === "single" ? "单主题搜索" : "多主题轮询"}`,
     `- 已启用机会类型: ${typeSelection.labels.join("、")}`,
     `- 已启用 subscription_id: ${typeSelection.subscriptionIds.join(", ")}`,
     `- 默认信号源: ${sourceSelection.labels.join("、") || "未配置"}`,
@@ -154,15 +155,11 @@ export function buildScreeningExecutionSummary(
     `- 默认补充关键词: ${extraKeywords.join("、") || "无"}`,
     `- 单次完整尝试内最大搜索轮数: ${maxSearchRoundsPerAttempt}`,
     `- 单轮最大召回数建议: ${maxResultsPerQuery}`,
-    "- 是否强制达标: 是",
-    "- 结果保留策略: 已确认可入池机会全部保留，不因目标数量被截断",
-    "- 停止条件: 入池数量达到目标，或用户手动终止",
+    "- 多主题执行原则: 单主题查询逻辑保持不变，多主题只做轮询，不做混搜",
+    topicExecutionPlanText,
   ].join("\n");
 }
 
-// 初筛相关的本地存储目录。
-// runs: 每次初筛任务的完整原始结果
-// artifact: 供后续深查复用的候选池快照
 export const SCREENING_STORAGE_DIRS = {
   runs: "screening-runs",
   artifact: "screening-pool",

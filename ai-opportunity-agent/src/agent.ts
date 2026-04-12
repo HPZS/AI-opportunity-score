@@ -643,12 +643,18 @@ export class Agent {
     if (this.openaiMessages.length < 5) return;
     const systemMsg = this.openaiMessages[0];
     const lastUserMsg = this.openaiMessages[this.openaiMessages.length - 1];
+    const historyWithoutSystem = this.openaiMessages.slice(1);
+    const summaryHistory =
+      (lastUserMsg as any)?.role === "user"
+        ? historyWithoutSystem.slice(0, -1)
+        : historyWithoutSystem;
+
     const summaryResp = await this.openaiClient!.chat.completions.create({
       model: this.model,
       max_tokens: 2048,
       messages: [
         { role: "system", content: "You are a conversation summarizer. Be concise but preserve important details." },
-        ...this.openaiMessages.slice(1, -1),
+        ...summaryHistory,
         { role: "user", content: "Summarize the conversation so far in a concise paragraph, preserving key decisions, file paths, and context needed to continue the work." },
       ],
     });

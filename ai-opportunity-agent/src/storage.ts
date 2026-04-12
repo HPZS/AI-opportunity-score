@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import type { ToolExecutionTraceEntry } from "./agent.js";
 import { attachExecutionStatsToParsedResult } from "./execution-stats.js";
@@ -8,6 +8,7 @@ import { normalizeParsedTaskResult } from "./result-normalizer.js";
 interface TaskStorageInput {
   taskType: string;
   originalTaskType?: string;
+  taskKey?: string;
   model: string;
   taskMessage: string;
   prompt?: string;
@@ -67,7 +68,25 @@ function collectRecordArray(container: Record<string, unknown>, key: string): Re
 
 function writeJsonFile(dir: string, fileName: string, payload: unknown): void {
   ensureDir(dir);
-  writeFileSync(join(dir, fileName), JSON.stringify(payload, null, 2), "utf-8");
+  const filePath = join(dir, fileName);
+  const tempFilePath = `${filePath}.tmp`;
+  writeFileSync(tempFilePath, JSON.stringify(payload, null, 2), "utf-8");
+  if (existsSync(filePath)) {
+    unlinkSync(filePath);
+  }
+  renameSync(tempFilePath, filePath);
+}
+
+function removeFileIfExists(dir: string, fileName: string): void {
+  const filePath = join(dir, fileName);
+  if (existsSync(filePath)) {
+    unlinkSync(filePath);
+  }
+}
+
+export function createTaskResultKey(taskType: string): string {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return `${timestamp}_${slugify(taskType)}`;
 }
 
 function buildScreeningPool(parsedResult: Record<string, unknown>, baseName: string, savedAt: string): Record<string, unknown>[] {
@@ -103,7 +122,11 @@ function writeTaskArtifacts(
       const pool = buildScreeningPool(parsedResult, baseName, String(payload.savedAt || new Date().toISOString()));
       if (pool.length > 0) {
         writeJsonFile(poolDir, `${baseName}.json`, pool);
+      } else {
+        removeFileIfExists(poolDir, `${baseName}.json`);
       }
+    } else {
+      removeFileIfExists(poolDir, `${baseName}.json`);
     }
     return;
   }
@@ -114,6 +137,8 @@ function writeTaskArtifacts(
     writeJsonFile(runsDir, `${baseName}.json`, payload);
     if (parsedResult !== null) {
       writeJsonFile(reportsDir, `${baseName}.json`, parsedResult);
+    } else {
+      removeFileIfExists(reportsDir, `${baseName}.json`);
     }
     return;
   }
@@ -125,8 +150,14 @@ function writeTaskArtifacts(
     const flatLeads = buildScreeningPool(parsedResult, baseName, String(payload.savedAt || new Date().toISOString()));
     if (flatLeads.length > 0) {
       writeJsonFile(leadsDir, `${baseName}.json`, flatLeads);
+    } else {
+      removeFileIfExists(leadsDir, `${baseName}.json`);
     }
+    return;
   }
+
+  removeFileIfExists(join(process.cwd(), "data", "reports"), `${baseName}.json`);
+  removeFileIfExists(join(process.cwd(), "data", "leads"), `${baseName}.json`);
 }
 
 export function saveTaskResult(input: TaskStorageInput): { filePath: string; parsed: boolean } {
@@ -134,8 +165,7 @@ export function saveTaskResult(input: TaskStorageInput): { filePath: string; par
   ensureDir(baseDir);
 
   const now = new Date();
-  const timestamp = now.toISOString().replace(/[:.]/g, "-");
-  const baseName = `${timestamp}_${slugify(input.taskType)}`;
+  const baseName = input.taskKey || createTaskResultKey(input.taskType);
   const filename = `${baseName}.json`;
   const filePath = join(baseDir, filename);
   const normalizedParsedResult = normalizeParsedTaskResult(input.taskType, extractJsonFromText(input.assistantText));
@@ -159,6 +189,7 @@ export function saveTaskResult(input: TaskStorageInput): { filePath: string; par
   const taskState = input.taskState || (input.completed === false ? "failed" : "completed");
 
   const payload = {
+    taskKey: baseName,
     taskType: input.taskType,
     originalTaskType: input.originalTaskType || input.taskType,
     model: input.model,
@@ -183,7 +214,7 @@ export function saveTaskResult(input: TaskStorageInput): { filePath: string; par
     rawText: input.assistantText,
   };
 
-  writeFileSync(filePath, JSON.stringify(payload, null, 2), "utf-8");
+  writeJsonFile(baseDir, filename, payload);
   writeTaskArtifacts(input.taskType, baseName, payload, parsedResult);
   return { filePath, parsed: parsedResult !== null };
 }

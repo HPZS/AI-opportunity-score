@@ -2,7 +2,6 @@ package com.aiopportunity.backend.web.dto;
 
 import java.util.List;
 
-import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.NotBlank;
 
 public record AgentRuntimeStartRequest(
@@ -18,9 +17,4 @@ public record AgentRuntimeStartRequest(
         List<String> extraKeywords,
         Boolean thinking,
         Boolean bypassPermissions
-) {
-    @AssertTrue(message = "prompt 和 inputFile 至少需要提供一个")
-    public boolean hasPromptOrInputFile() {
-        return (prompt != null && !prompt.isBlank()) || (inputFile != null && !inputFile.isBlank());
-    }
-}
+) {}

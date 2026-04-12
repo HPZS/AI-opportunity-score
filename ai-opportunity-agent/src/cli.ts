@@ -10,7 +10,7 @@ import type { PermissionMode } from "./tools.js";
 import { getEnvVar, loadEnvFile } from "./env.js";
 import { attachExecutionStatsToParsedResult, formatTaskExecutionStats } from "./execution-stats.js";
 import { normalizeParsedTaskResult } from "./result-normalizer.js";
-import { saveTaskResult } from "./storage.js";
+import { createTaskResultKey, saveTaskResult } from "./storage.js";
 import { buildTaskFailureMessage, buildTaskMessage, extractJsonFromText, runTaskWithSupervisor } from "./task-runner.js";
 import { runScreeningSelfImprovementReview } from "./self-improvement.js";
 
@@ -231,6 +231,14 @@ async function main() {
     apiKey: resolvedApiKey,
   });
 
+  const requestedTaskProfile = resolveTaskProfile(taskType);
+  const taskResultKey = createTaskResultKey(requestedTaskProfile.canonicalType);
+  const resumeKey = buildTaskResumeKey({
+    taskType: requestedTaskProfile.canonicalType,
+    prompt,
+    inputFile,
+  });
+
   if (resume) {
     const sessionId = getLatestSessionId();
     if (sessionId) {
@@ -271,6 +279,28 @@ async function main() {
         inputFile,
       }, {
         shouldStop: () => manualStopRequested,
+        onSavableAttempt: ({ taskMessage, taskType: canonicalTaskType, originalTaskType, result, attemptCount, validation }) => {
+          const incrementalToolTrace = agent.exportToolExecutionTrace();
+          const incrementalTaskState = validation.ok ? "completed" : "partial";
+          const saved = saveTaskResult({
+            taskKey: taskResultKey,
+            taskType: canonicalTaskType,
+            originalTaskType,
+            model,
+            taskMessage,
+            prompt,
+            inputFile,
+            assistantText: result.text,
+            attemptCount,
+            stoppedByUser: false,
+            completed: validation.ok,
+            taskState: incrementalTaskState,
+            tokens: result.tokens,
+            toolTrace: incrementalToolTrace,
+            resumeKey,
+          });
+          printInfo(`已增量保存可入库结果到 ${saved.filePath}`);
+        },
       });
     } finally {
       process.off("SIGINT", handleTaskSigint);
@@ -293,8 +323,10 @@ async function main() {
       }
 
       const toolTrace = agent.exportToolExecutionTrace();
+      const taskState = validation.ok ? "completed" : validation.partial ? "partial" : "failed";
 
       const saved = saveTaskResult({
+        taskKey: taskResultKey,
         taskType: canonicalTaskType,
         originalTaskType,
         model,
@@ -305,14 +337,10 @@ async function main() {
         attemptCount,
         stoppedByUser,
         completed: validation.ok,
-        taskState: validation.ok ? "completed" : "failed",
+        taskState,
         tokens: result.tokens,
         toolTrace,
-        resumeKey: buildTaskResumeKey({
-          taskType: canonicalTaskType,
-          prompt,
-          inputFile,
-        }),
+        resumeKey,
       });
       printInfo(`任务结果已保存到 ${saved.filePath}`);
 
@@ -356,6 +384,10 @@ async function main() {
 
       const failureMessage = buildTaskFailureMessage(validation);
       if (failureMessage) {
+        if (validation.partial) {
+          printInfo(failureMessage);
+          return;
+        }
         printError(failureMessage);
         process.exit(2);
       }
@@ -370,6 +402,7 @@ async function main() {
     if (canonicalTaskType === "investigation" && taskMessage) {
       try {
         const saved = saveTaskResult({
+          taskKey: taskResultKey,
           taskType: canonicalTaskType,
           originalTaskType: taskType || canonicalTaskType,
           model,
@@ -384,11 +417,7 @@ async function main() {
           failureReason: error.message,
           tokens: agent.getTokenUsage(),
           toolTrace,
-          resumeKey: buildTaskResumeKey({
-            taskType: canonicalTaskType,
-            prompt,
-            inputFile,
-          }),
+          resumeKey,
         });
         printInfo(`深查中断检查点已保存到 ${saved.filePath}`);
       } catch (checkpointError: any) {

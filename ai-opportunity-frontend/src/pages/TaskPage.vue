@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 
 import {
@@ -29,6 +29,7 @@ import type {
 import { formatDate, formatLabel } from '../utils'
 
 type StartMode = 'screening_chain' | 'screening' | 'investigation'
+type ConfigDetailView = 'runtime_scope' | 'system' | 'default' | 'topics' | 'sources'
 
 interface StartModeOption {
   value: StartMode
@@ -40,22 +41,22 @@ const startModeOptions: StartModeOption[] = [
   {
     value: 'screening_chain',
     label: '初筛 + 深查',
-    description: '先跑一轮初筛，命中候选池后自动继续深查。',
+    description: '先执行一轮初筛，命中候选池后自动继续深查。',
   },
   {
     value: 'screening',
     label: '仅初筛',
-    description: '只判断本轮哪些线索值得销售关注，不自动深查。',
+    description: '只判断本轮哪些线索值得继续关注，不自动进入深查。',
   },
   {
     value: 'investigation',
     label: '仅深查',
-    description: '直接对指定任务或文件做深查，不再额外初筛。',
+    description: '直接对指定任务或输入文件做深查，不再额外执行初筛。',
   },
 ]
 
 const opportunityModeOptions = [
-  { value: 'all', label: '全部已启用主题' },
+  { value: 'all', label: '全部启用主题' },
   { value: 'single', label: '仅选中主题' },
 ]
 
@@ -84,6 +85,9 @@ const isSystemConfigModalOpen = ref(false)
 const isDefaultConfigModalOpen = ref(false)
 const isSignalSourceModalOpen = ref(false)
 const isKeywordSubscriptionModalOpen = ref(false)
+const isStartTopicModalOpen = ref(false)
+const isStartSourceModalOpen = ref(false)
+const activeConfigDetailView = ref<ConfigDetailView | null>(null)
 
 const startForm = reactive({
   taskType: 'screening_chain' as StartMode,
@@ -197,10 +201,11 @@ const defaultOpportunityModeLabel = computed(
   () =>
     opportunityModeOptions.find(
       (option) => option.value === defaultConfigForm.screeningOpportunityMode,
-    )?.label || '全部已启用主题',
+    )?.label || '全部启用主题',
 )
 const availableTopicOptions = computed(() => config.value?.keywordSubscriptionOptions ?? [])
 const availableSourceOptions = computed(() => config.value?.signalSourceOptions ?? [])
+const isConfigDetailModalOpen = computed(() => activeConfigDetailView.value !== null)
 
 const selectedModeSummary = computed(() => {
   return startModeOptions.find((item) => item.value === startForm.taskType) ?? startModeOptions[0]
@@ -220,11 +225,12 @@ const metrics = computed(() => {
       value: status.value?.running ? '运行中' : '空闲',
       hint: status.value?.running
         ? `任务类型：${formatLabel(status.value.taskType || '--')}`
-        : '当前没有正在执行的 Agent 任务',
+        : '当前没有正在执行的智能体任务',
     },
     {
       label: '默认联动方式',
-      value: config.value?.runInvestigationAfterScreening === false ? '仅初筛' : '初筛后自动深查',
+      value:
+        config.value?.runInvestigationAfterScreening === false ? '仅初筛' : '初筛后自动深查',
       hint: `本轮启动方式：${activeMode}`,
     },
     {
@@ -243,11 +249,11 @@ const currentScopeSummary = computed(() => {
       { label: '当前模式', value: '仅深查' },
       {
         label: '任务输入',
-        value: startForm.inputFile.trim() || '使用 Prompt 直接发起深查',
+        value: startForm.inputFile.trim() || '使用任务提示直接发起深查',
       },
       {
         label: '补充说明',
-        value: '本轮不会再从信号源筛线索，而是直接对指定内容做深查。',
+        value: '本轮不会再从信号源筛选线索，而是直接对指定内容做深查。',
       },
     ]
   }
@@ -255,7 +261,7 @@ const currentScopeSummary = computed(() => {
   return [
     {
       label: '机会类型',
-      value: startForm.screeningOpportunityMode === 'single' ? '仅选中主题' : '全部已启用主题',
+      value: startForm.screeningOpportunityMode === 'single' ? '仅选中主题' : '全部启用主题',
     },
     {
       label: '主题订阅',
@@ -271,6 +277,7 @@ const currentScopeSummary = computed(() => {
     },
   ]
 })
+
 
 const systemConfigSummary = computed(() => [
   {
@@ -290,6 +297,7 @@ const systemConfigSummary = computed(() => [
     value: envItemMap.value.get('MINI_CLAUDE_MODEL')?.value || '未设置',
   },
 ])
+
 
 const defaultConfigSummary = computed(() => [
   {
@@ -319,6 +327,65 @@ const defaultConfigSummary = computed(() => [
     ),
   },
 ])
+
+const managementConfigSummary = computed(() => [
+  {
+    label: '系统配置',
+    value: String(
+      systemConfigSummary.value.filter(
+        (item) => !item.value.includes('未配置') && !item.value.includes('未设置'),
+      ).length,
+    ),
+    hint: '已完成配置的摘要项',
+  },
+  {
+    label: '默认目标数',
+    value: String(defaultConfigForm.targetPoolEntryCount || 0),
+    hint: defaultConfigForm.runInvestigationAfterScreening ? '默认初筛后继续深查' : '默认仅初筛',
+  },
+  {
+    label: '主题 / 信号源',
+    value: `${availableTopicOptions.value.length} / ${availableSourceOptions.value.length}`,
+    hint: '可用主题数 / 可用信号源数',
+  },
+])
+
+
+const configDetailMeta = computed(() => {
+  switch (activeConfigDetailView.value) {
+    case 'system':
+      return {
+        eyebrow: '系统参数',
+        title: '系统配置详情',
+        description: '查看当前运行环境变量、模型和接口配置状态。',
+      }
+    case 'default':
+      return {
+        eyebrow: '默认参数',
+        title: '默认筛选配置详情',
+        description: '查看默认筛选策略、主题、信号源和补充关键词。',
+      }
+    case 'topics':
+      return {
+        eyebrow: '主题参数',
+        title: '主题订阅详情',
+        description: '查看主题关键词，以及默认和本轮的启用状态。',
+      }
+    case 'sources':
+      return {
+        eyebrow: '信号源参数',
+        title: '信号源详情',
+        description: '查看信号源定义，以及默认和本轮的启用状态。',
+      }
+    case 'runtime_scope':
+    default:
+      return {
+        eyebrow: '运行参数',
+        title: '本轮任务详情',
+        description: '查看本轮运行范围、已选筛选项和补充关键词。',
+      }
+  }
+})
 
 watch(selectedTaskId, async (value) => {
   if (!value) {
@@ -351,7 +418,7 @@ function readConfiguredSummary(secretKey: string, urlKey: string) {
     return '未配置'
   }
 
-  return url?.value ? `已配置 Key / ${url.value}` : '已配置 Key'
+  return url?.value ? '已配置 Key / ' + url.value : '已配置 Key'
 }
 
 function joinOrFallback(values: string[], fallback: string) {
@@ -361,7 +428,7 @@ function joinOrFallback(values: string[], fallback: string) {
 
 function parseTextList(value: string) {
   return value
-    .split(/\r?\n|,|，|;|；/)
+    .split(/\r?\n|,|;|，|；/)
     .map((item) => item.trim())
     .filter(Boolean)
 }
@@ -446,7 +513,11 @@ async function refreshPage(includeConfig = false) {
   pageErrorMessage.value = ''
 
   try {
-    const requests: Array<Promise<unknown>> = [getAgentRuntimeStatus(), getAgentRuntimeLogs(200), getTasks(0, 10)]
+    const requests: Array<Promise<unknown>> = [
+      getAgentRuntimeStatus(),
+      getAgentRuntimeLogs(200),
+      getTasks(0, 10),
+    ]
 
     if (includeConfig || !hasInitializedForms.value) {
       requests.unshift(getAgentRuntimeConfig())
@@ -550,14 +621,25 @@ function openKeywordSubscriptionModal() {
   isKeywordSubscriptionModalOpen.value = true
 }
 
+function openConfigDetailModal(view: ConfigDetailView) {
+  activeConfigDetailView.value = view
+}
+
+function closeConfigDetailModal() {
+  activeConfigDetailView.value = null
+}
+
+function openStartTopicModal() {
+  isStartTopicModalOpen.value = true
+}
+
+function openStartSourceModal() {
+  isStartSourceModalOpen.value = true
+}
+
 async function handleStart() {
   pageErrorMessage.value = ''
   pageSuccessMessage.value = ''
-
-  if (!startForm.prompt.trim() && !startForm.inputFile.trim()) {
-    pageErrorMessage.value = '请至少填写 Prompt 或输入文件路径。'
-    return
-  }
 
   isStarting.value = true
 
@@ -779,16 +861,111 @@ function taskResultPreview() {
     <p v-if="pageSuccessMessage" class="alert-success">{{ pageSuccessMessage }}</p>
 
     <section class="agent-grid">
-      <article class="panel runtime-card">
+      <article class="panel runtime-card agent-management-panel">
         <div class="panel__header">
           <div>
-            <p class="section-eyebrow">Runtime Control</p>
-            <h2>启动与控制</h2>
+            <p class="section-eyebrow">智能体管理</p>
+            <h2>启动与配置</h2>
           </div>
           <span class="status-chip" :class="{ 'status-chip--off': !status?.running }">
             {{ status?.running ? 'Agent 运行中' : 'Agent 空闲中' }}
           </span>
         </div>
+
+        <section class="management-overview-grid">
+          <div v-for="item in managementConfigSummary" :key="item.label" class="summary-card">
+            <span>{{ item.label }}</span>
+            <strong>{{ item.value }}</strong>
+            <small>{{ item.hint }}</small>
+          </div>
+        </section>
+
+        <section class="management-overview-grid management-overview-grid--panels">
+          <div class="summary-section">
+            <div class="summary-section__header">
+              <div>
+                <strong>系统配置</strong>
+                <span>管理 AI Key、Base URL 和默认模型。</span>
+              </div>
+              <div class="summary-section__actions">
+                <button class="button-secondary" type="button" @click="openConfigDetailModal('system')">
+                  查看参数
+                </button>
+                <button class="button-secondary" type="button" @click="openSystemConfigModal">
+                  编辑配置
+                </button>
+              </div>
+            </div>
+
+            <div class="scope-summary__grid">
+              <div v-for="item in systemConfigSummary" :key="item.label" class="summary-card">
+                <span>{{ item.label }}</span>
+                <strong>{{ item.value }}</strong>
+              </div>
+            </div>
+          </div>
+
+          <div class="summary-section">
+            <div class="summary-section__header">
+              <div>
+                <strong>默认筛选配置</strong>
+                <span>管理默认运行方式、目标池规模和筛选范围。</span>
+              </div>
+              <div class="summary-section__actions">
+                <button class="button-secondary" type="button" @click="openConfigDetailModal('default')">
+                  查看参数
+                </button>
+                <button class="button-secondary" type="button" @click="openDefaultConfigModal">
+                  编辑配置
+                </button>
+              </div>
+            </div>
+
+            <div class="scope-summary__grid">
+              <div v-for="item in defaultConfigSummary" :key="item.label" class="summary-card">
+                <span>{{ item.label }}</span>
+                <strong>{{ item.value }}</strong>
+              </div>
+            </div>
+          </div>
+
+          <div class="summary-section">
+            <div class="summary-section__header">
+              <div>
+                <strong>主题与信号源</strong>
+                <span>在这里新增条目，并通过弹窗查看详细参数。</span>
+              </div>
+              <div class="summary-section__actions">
+                <button class="button-secondary" type="button" @click="openConfigDetailModal('topics')">
+                  主题参数
+                </button>
+                <button class="button-secondary" type="button" @click="openConfigDetailModal('sources')">
+                  信号源参数
+                </button>
+              </div>
+            </div>
+
+            <div class="scope-summary__grid">
+              <div class="summary-card">
+                <span>主题</span>
+                <strong>{{ availableTopicOptions.length }}</strong>
+              </div>
+              <div class="summary-card">
+                <span>信号源</span>
+                <strong>{{ availableSourceOptions.length }}</strong>
+              </div>
+            </div>
+
+            <div class="config-toolbar">
+              <button class="button-secondary" type="button" @click="openSignalSourceModal">
+                新增信号源
+              </button>
+              <button class="button-secondary" type="button" @click="openKeywordSubscriptionModal">
+                新增主题
+              </button>
+            </div>
+          </div>
+        </section>
 
         <div class="mode-toggle-grid">
           <button
@@ -814,11 +991,11 @@ function taskResultPreview() {
             <div class="checkbox-row">
               <label class="checkbox-pill">
                 <input v-model="startForm.thinking" type="checkbox" />
-                <span>开启 Thinking</span>
+                <span>开启深度思考</span>
               </label>
               <label class="checkbox-pill">
                 <input v-model="startForm.bypassPermissions" type="checkbox" />
-                <span>Bypass Permissions</span>
+                <span>跳过权限检查</span>
               </label>
             </div>
 
@@ -852,10 +1029,15 @@ function taskResultPreview() {
         <div class="scope-summary">
           <div class="scope-summary__header">
             <div>
-              <p class="section-eyebrow">Run Scope</p>
-              <h3>本轮{{ isScreeningStart ? '初筛范围' : '深查范围' }}</h3>
+              <p class="section-eyebrow">运行范围</p>
+              <h3>{{ isScreeningStart ? '本轮初筛范围' : '本轮深查范围' }}</h3>
             </div>
-            <span class="tag">{{ selectedModeSummary.label }}</span>
+            <div class="summary-section__actions">
+              <span class="tag">{{ selectedModeSummary.label }}</span>
+              <button class="button-secondary" type="button" @click="openConfigDetailModal('runtime_scope')">
+                查看详情
+              </button>
+            </div>
           </div>
 
           <div class="scope-summary__grid">
@@ -864,237 +1046,15 @@ function taskResultPreview() {
               <strong>{{ item.value }}</strong>
             </div>
           </div>
-
-          <div v-if="isScreeningStart" class="default-display">
-            <div class="default-display__header">
-              <strong>默认已回填配置</strong>
-              <span>下面这些是系统当前默认值，页面加载时已经自动带入本轮任务。</span>
-            </div>
-
-            <div class="default-display__groups">
-              <div class="default-chip-group">
-                <span class="default-chip-group__label">机会类型</span>
-                <div class="chip-group">
-                  <span class="tag">{{ defaultOpportunityModeLabel }}</span>
-                </div>
-              </div>
-
-              <div class="default-chip-group">
-                <span class="default-chip-group__label">主题订阅</span>
-                <div class="chip-group">
-                  <span
-                    v-for="item in defaultTopicLabels"
-                    :key="`default-topic-${item}`"
-                    class="tag"
-                  >
-                    {{ item }}
-                  </span>
-                  <span v-if="!defaultTopicLabels.length" class="tag">当前未配置</span>
-                </div>
-              </div>
-
-              <div class="default-chip-group">
-                <span class="default-chip-group__label">信号源</span>
-                <div class="chip-group">
-                  <span
-                    v-for="item in defaultSourceLabels"
-                    :key="`default-source-${item}`"
-                    class="tag"
-                  >
-                    {{ item }}
-                  </span>
-                  <span v-if="!defaultSourceLabels.length" class="tag">当前未配置</span>
-                </div>
-              </div>
-
-              <div class="default-chip-group">
-                <span class="default-chip-group__label">关键词</span>
-                <div class="chip-group">
-                  <span
-                    v-for="item in defaultExtraKeywordList"
-                    :key="`default-keyword-${item}`"
-                    class="tag"
-                  >
-                    {{ item }}
-                  </span>
-                  <span v-if="!defaultExtraKeywordList.length" class="tag">当前未配置</span>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div v-if="isScreeningStart" class="config-detail-board">
-            <div class="config-detail-section">
-              <div class="config-detail-section__header">
-                <strong>机会类型配置明细</strong>
-                <span>把默认策略和本轮策略直接展开显示。</span>
-              </div>
-              <div class="detail-item-list detail-item-list--double">
-                <article class="detail-item-card">
-                  <span class="detail-item-card__label">默认策略</span>
-                  <strong>{{ defaultOpportunityModeLabel }}</strong>
-                  <p>
-                    {{
-                      defaultConfigForm.runInvestigationAfterScreening
-                        ? '默认运行方式：初筛 + 深查'
-                        : '默认运行方式：仅初筛'
-                    }}
-                  </p>
-                </article>
-                <article class="detail-item-card">
-                  <span class="detail-item-card__label">本轮策略</span>
-                  <strong>
-                    {{
-                      startForm.screeningOpportunityMode === 'all'
-                        ? '全部已启用主题'
-                        : '仅选中主题'
-                    }}
-                  </strong>
-                  <p>本轮运行方式：{{ selectedModeSummary.label }}</p>
-                </article>
-              </div>
-            </div>
-
-            <div class="config-detail-section">
-              <div class="config-detail-section__header">
-                <strong>主题订阅明细</strong>
-                <span>每个主题都展示关键词，并标记默认是否启用、本轮是否启用。</span>
-              </div>
-              <div class="detail-item-list">
-                <article
-                  v-for="item in availableTopicOptions"
-                  :key="`topic-${item.id}`"
-                  class="detail-item-card"
-                >
-                  <div class="detail-item-card__top">
-                    <div>
-                      <strong>{{ item.label }}</strong>
-                      <p>{{ item.description || '暂无说明' }}</p>
-                    </div>
-                    <div class="chip-group">
-                      <span
-                        class="tag"
-                        :class="{ 'tag--active': isTopicEnabledInDefault(item.id) }"
-                      >
-                        {{ isTopicEnabledInDefault(item.id) ? '默认启用' : '默认未启用' }}
-                      </span>
-                      <span
-                        class="tag"
-                        :class="{ 'tag--active': isTopicEnabledInCurrent(item.id) }"
-                      >
-                        {{ isTopicEnabledInCurrent(item.id) ? '本轮启用' : '本轮未启用' }}
-                      </span>
-                    </div>
-                  </div>
-                  <div class="detail-item-card__subgroup">
-                    <span class="detail-item-card__label">关键词</span>
-                    <div class="chip-group">
-                      <span
-                        v-for="keyword in item.keywords"
-                        :key="`topic-keyword-${item.id}-${keyword}`"
-                        class="tag"
-                      >
-                        {{ keyword }}
-                      </span>
-                      <span v-if="!item.keywords.length" class="tag">未配置关键词</span>
-                    </div>
-                  </div>
-                </article>
-                <div v-if="!availableTopicOptions.length" class="empty-card">
-                  当前没有可展示的主题订阅配置。
-                </div>
-              </div>
-            </div>
-
-            <div class="config-detail-section">
-              <div class="config-detail-section__header">
-                <strong>信号源明细</strong>
-                <span>每个信号源都展示说明，并标记默认是否启用、本轮是否启用。</span>
-              </div>
-              <div class="detail-item-list">
-                <article
-                  v-for="item in availableSourceOptions"
-                  :key="`source-${item.id}`"
-                  class="detail-item-card"
-                >
-                  <div class="detail-item-card__top">
-                    <div>
-                      <strong>{{ item.label }}</strong>
-                      <p>{{ item.description || '暂无说明' }}</p>
-                    </div>
-                    <div class="chip-group">
-                      <span
-                        class="tag"
-                        :class="{ 'tag--active': isSourceEnabledInDefault(item.id) }"
-                      >
-                        {{ isSourceEnabledInDefault(item.id) ? '默认启用' : '默认未启用' }}
-                      </span>
-                      <span
-                        class="tag"
-                        :class="{ 'tag--active': isSourceEnabledInCurrent(item.id) }"
-                      >
-                        {{ isSourceEnabledInCurrent(item.id) ? '本轮启用' : '本轮未启用' }}
-                      </span>
-                    </div>
-                  </div>
-                  <div class="detail-item-card__subgroup">
-                    <span class="detail-item-card__label">信号源 ID</span>
-                    <div class="chip-group">
-                      <span class="tag">{{ item.id }}</span>
-                    </div>
-                  </div>
-                </article>
-                <div v-if="!availableSourceOptions.length" class="empty-card">
-                  当前没有可展示的信号源配置。
-                </div>
-              </div>
-            </div>
-
-            <div class="config-detail-section">
-              <div class="config-detail-section__header">
-                <strong>关键词明细</strong>
-                <span>把默认关键词和本轮补充关键词分别列出。</span>
-              </div>
-              <div class="detail-item-list detail-item-list--double">
-                <article class="detail-item-card">
-                  <span class="detail-item-card__label">默认关键词</span>
-                  <div class="chip-group">
-                    <span
-                      v-for="item in defaultExtraKeywordList"
-                      :key="`default-extra-${item}`"
-                      class="tag"
-                    >
-                      {{ item }}
-                    </span>
-                    <span v-if="!defaultExtraKeywordList.length" class="tag">默认未配置</span>
-                  </div>
-                </article>
-                <article class="detail-item-card">
-                  <span class="detail-item-card__label">本轮补充关键词</span>
-                  <div class="chip-group">
-                    <span
-                      v-for="item in startExtraKeywordList"
-                      :key="`current-extra-${item}`"
-                      class="tag"
-                    >
-                      {{ item }}
-                    </span>
-                    <span v-if="!startExtraKeywordList.length" class="tag">本轮未添加</span>
-                  </div>
-                </article>
-              </div>
-            </div>
-          </div>
         </div>
-
         <div class="config-grid config-grid--runtime">
           <label class="field">
-            <span>Prompt</span>
+            <span>任务提示</span>
             <textarea
               v-model="startForm.prompt"
               class="textarea"
               rows="6"
-              placeholder="填写本轮任务说明，例如初筛主题、深查目标或补充要求"
+              placeholder="填写任务意图、初筛重点或深查要求"
             />
           </label>
 
@@ -1104,7 +1064,7 @@ function taskResultPreview() {
               <input
                 v-model.trim="startForm.inputFile"
                 type="text"
-                placeholder="例如 data/task-results/xxx.json"
+                placeholder="例如：data/task-results/xxx.json"
               />
             </label>
 
@@ -1113,7 +1073,7 @@ function taskResultPreview() {
               <input
                 v-model.trim="startForm.model"
                 type="text"
-                placeholder="为空则使用系统默认模型"
+                placeholder="留空则使用默认模型"
               />
             </label>
           </div>
@@ -1135,68 +1095,35 @@ function taskResultPreview() {
             </label>
           </div>
 
-          <section class="selection-block">
-            <div class="selection-block__header">
-              <div>
-                <strong>主题订阅</strong>
-                <span>默认主题会先自动回填到这里，本轮可以临时增减。</span>
-              </div>
-              <span class="tag">已选 {{ startForm.subscriptionIds.length }}</span>
-            </div>
-
-            <div class="option-grid">
-              <label
-                v-for="item in config?.keywordSubscriptionOptions ?? []"
-                :key="item.id"
-                class="option-card"
-              >
-                <input
-                  :checked="startForm.subscriptionIds.includes(item.id)"
-                  type="checkbox"
-                  @change="toggleId(startForm.subscriptionIds, item.id)"
-                />
+          <div class="config-grid config-grid--runtime">
+            <article class="selection-summary-card">
+              <div class="selection-summary-card__header">
                 <div>
-                  <div class="option-card__title">
-                    <strong>{{ item.label }}</strong>
-                    <span class="tag">{{ item.id }}</span>
-                  </div>
-                  <p>{{ item.description || '暂无说明' }}</p>
-                  <small>关键词：{{ joinOrFallback(item.keywords, '未定义') }}</small>
+                  <strong>主题订阅</strong>
+                  <span>本轮任务使用的主题统一在弹窗内查看和勾选。</span>
                 </div>
-              </label>
-            </div>
-          </section>
-
-          <section class="selection-block">
-            <div class="selection-block__header">
-              <div>
-                <strong>信号源</strong>
-                <span>支持逐项启用或关闭，不再只有“全部开/全部关”。</span>
+                <button class="button-secondary" type="button" @click="openStartTopicModal">
+                  查看全部
+                </button>
               </div>
-              <span class="tag">已选 {{ startForm.sourceProfileIds.length }}</span>
-            </div>
+              <p>{{ joinOrFallback(selectedTopicLabels, '未选择主题') }}</p>
+              <small>已选 {{ startForm.subscriptionIds.length }} 项</small>
+            </article>
 
-            <div class="option-grid">
-              <label
-                v-for="item in config?.signalSourceOptions ?? []"
-                :key="item.id"
-                class="option-card"
-              >
-                <input
-                  :checked="startForm.sourceProfileIds.includes(item.id)"
-                  type="checkbox"
-                  @change="toggleId(startForm.sourceProfileIds, item.id)"
-                />
+            <article class="selection-summary-card">
+              <div class="selection-summary-card__header">
                 <div>
-                  <div class="option-card__title">
-                    <strong>{{ item.label }}</strong>
-                    <span class="tag">{{ item.id }}</span>
-                  </div>
-                  <p>{{ item.description || '暂无说明' }}</p>
+                  <strong>信号源</strong>
+                  <span>本轮任务使用的信号源统一在弹窗内查看和勾选。</span>
                 </div>
-              </label>
-            </div>
-          </section>
+                <button class="button-secondary" type="button" @click="openStartSourceModal">
+                  查看全部
+                </button>
+              </div>
+              <p>{{ joinOrFallback(selectedSourceLabels, '未选择信号源') }}</p>
+              <small>已选 {{ startForm.sourceProfileIds.length }} 项</small>
+            </article>
+          </div>
 
           <label class="field">
             <span>补充关键词</span>
@@ -1204,70 +1131,10 @@ function taskResultPreview() {
               v-model="startForm.extraKeywordsText"
               class="textarea"
               rows="4"
-              placeholder="一行一个，或用逗号分隔；用于本轮额外补充检索词"
+              placeholder="一行一个，或使用逗号分隔"
             />
           </label>
         </template>
-
-      </article>
-
-      <article class="panel runtime-card">
-        <div class="panel__header">
-          <div>
-            <p class="section-eyebrow">Config Hub</p>
-            <h2>配置中心</h2>
-          </div>
-          <span class="tag">把系统配置和本轮任务配置分开</span>
-        </div>
-
-        <section class="config-hub">
-          <div class="summary-section">
-            <div class="summary-section__header">
-              <div>
-                <strong>系统级配置</strong>
-                <span>管理 AI Key、Base URL 和默认模型。</span>
-              </div>
-              <button class="button-secondary" type="button" @click="openSystemConfigModal">
-                打开系统配置
-              </button>
-            </div>
-
-            <div class="scope-summary__grid">
-              <div v-for="item in systemConfigSummary" :key="item.label" class="summary-card">
-                <span>{{ item.label }}</span>
-                <strong>{{ item.value }}</strong>
-              </div>
-            </div>
-          </div>
-
-          <div class="summary-section">
-            <div class="summary-section__header">
-              <div>
-                <strong>默认筛选配置</strong>
-                <span>管理默认运行方式、候选池目标数、默认主题和默认信号源。</span>
-              </div>
-              <button class="button-secondary" type="button" @click="openDefaultConfigModal">
-                打开默认配置
-              </button>
-            </div>
-
-            <div class="scope-summary__grid">
-              <div v-for="item in defaultConfigSummary" :key="item.label" class="summary-card">
-                <span>{{ item.label }}</span>
-                <strong>{{ item.value }}</strong>
-              </div>
-            </div>
-          </div>
-
-          <div class="config-toolbar">
-            <button class="button-secondary" type="button" @click="openSignalSourceModal">
-              新增信号源
-            </button>
-            <button class="button-secondary" type="button" @click="openKeywordSubscriptionModal">
-              新增关键词主题
-            </button>
-          </div>
-        </section>
       </article>
     </section>
 
@@ -1275,7 +1142,7 @@ function taskResultPreview() {
       <article class="panel log-card">
         <div class="panel__header">
           <div>
-            <p class="section-eyebrow">Logs</p>
+            <p class="section-eyebrow">运行日志</p>
             <h2>运行日志</h2>
           </div>
           <div class="log-meta">
@@ -1286,13 +1153,13 @@ function taskResultPreview() {
           </div>
         </div>
 
-        <pre class="log-console">{{ logs?.lines?.join('\n') || '当前还没有可展示的日志。' }}</pre>
+        <pre class="log-console">{{ logs?.lines?.join(`\n`) || '当前还没有可展示的日志。' }}</pre>
       </article>
 
       <article class="panel runtime-card">
         <div class="panel__header">
           <div>
-            <p class="section-eyebrow">Recent Tasks</p>
+            <p class="section-eyebrow">最近任务</p>
             <h2>最近任务批次</h2>
           </div>
           <span class="tag">共 {{ tasks?.totalElements ?? 0 }} 条</span>
@@ -1375,6 +1242,320 @@ function taskResultPreview() {
     </section>
 
     <div
+      v-if="isStartTopicModalOpen"
+      class="modal-backdrop"
+      @click.self="isStartTopicModalOpen = false"
+    >
+      <div class="modal-panel modal-panel--wide">
+        <div class="modal-panel__header">
+          <div>
+            <p class="section-eyebrow">主题订阅</p>
+            <h3>选择本轮主题订阅</h3>
+            <p>这里展示全部主题订阅，可直接勾选用于本轮任务。</p>
+          </div>
+          <button class="button-secondary" type="button" @click="isStartTopicModalOpen = false">
+            关闭
+          </button>
+        </div>
+
+        <div class="option-grid option-grid--modal">
+          <label
+            v-for="item in config?.keywordSubscriptionOptions ?? []"
+            :key="`start-topic-${item.id}`"
+            class="option-card"
+          >
+            <input
+              :checked="startForm.subscriptionIds.includes(item.id)"
+              type="checkbox"
+              @change="toggleId(startForm.subscriptionIds, item.id)"
+            />
+            <div>
+              <div class="option-card__title">
+                <strong>{{ item.label }}</strong>
+                <span class="tag">{{ item.id }}</span>
+              </div>
+              <p>{{ item.description || '暂无说明' }}</p>
+              <small>关键词：{{ joinOrFallback(item.keywords, '未定义') }}</small>
+            </div>
+          </label>
+          <div v-if="!(config?.keywordSubscriptionOptions ?? []).length" class="empty-card">
+            当前没有可选的主题订阅。
+          </div>
+        </div>
+
+        <div class="modal-panel__footer">
+          <button class="button-secondary" type="button" @click="isStartTopicModalOpen = false">
+            完成
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div
+      v-if="isStartSourceModalOpen"
+      class="modal-backdrop"
+      @click.self="isStartSourceModalOpen = false"
+    >
+      <div class="modal-panel modal-panel--wide">
+        <div class="modal-panel__header">
+          <div>
+            <p class="section-eyebrow">信号源</p>
+            <h3>选择本轮信号源</h3>
+            <p>这里展示全部信号源，可直接勾选用于本轮任务。</p>
+          </div>
+          <button class="button-secondary" type="button" @click="isStartSourceModalOpen = false">
+            关闭
+          </button>
+        </div>
+
+        <div class="option-grid option-grid--modal">
+          <label
+            v-for="item in config?.signalSourceOptions ?? []"
+            :key="`start-source-${item.id}`"
+            class="option-card"
+          >
+            <input
+              :checked="startForm.sourceProfileIds.includes(item.id)"
+              type="checkbox"
+              @change="toggleId(startForm.sourceProfileIds, item.id)"
+            />
+            <div>
+              <div class="option-card__title">
+                <strong>{{ item.label }}</strong>
+                <span class="tag">{{ item.id }}</span>
+              </div>
+              <p>{{ item.description || '暂无说明' }}</p>
+            </div>
+          </label>
+          <div v-if="!(config?.signalSourceOptions ?? []).length" class="empty-card">
+            当前没有可选的信号源。
+          </div>
+        </div>
+
+        <div class="modal-panel__footer">
+          <button class="button-secondary" type="button" @click="isStartSourceModalOpen = false">
+            完成
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div
+      v-if="isConfigDetailModalOpen"
+      class="modal-backdrop"
+      @click.self="closeConfigDetailModal"
+    >
+      <div class="modal-panel modal-panel--wide">
+        <div class="modal-panel__header">
+          <div>
+            <p class="section-eyebrow">{{ configDetailMeta.eyebrow }}</p>
+            <h3>{{ configDetailMeta.title }}</h3>
+            <p>{{ configDetailMeta.description }}</p>
+          </div>
+          <button class="button-secondary" type="button" @click="closeConfigDetailModal">
+            ??
+          </button>
+        </div>
+
+        <template v-if="activeConfigDetailView === 'system'">
+          <div class="scope-summary__grid">
+            <div v-for="item in systemConfigSummary" :key="item.label" class="summary-card">
+              <span>{{ item.label }}</span>
+              <strong>{{ item.value }}</strong>
+            </div>
+          </div>
+
+          <div class="config-item-list">
+            <div v-for="item in config?.envItems ?? []" :key="item.key" class="config-item">
+              <div>
+                <strong>{{ item.key }}</strong>
+                <p>{{ item.secret ? (item.configured ? '已配置' : '未配置') : item.value || '未设置' }}</p>
+              </div>
+              <span class="tag">{{ item.secret ? '敏感字段' : '普通字段' }}</span>
+            </div>
+          </div>
+        </template>
+
+        <template v-else-if="activeConfigDetailView === 'default'">
+          <div class="scope-summary__grid">
+            <div v-for="item in defaultConfigSummary" :key="item.label" class="summary-card">
+              <span>{{ item.label }}</span>
+              <strong>{{ item.value }}</strong>
+            </div>
+          </div>
+
+          <div class="detail-item-list detail-item-list--double">
+            <article class="detail-item-card">
+              <span class="detail-item-card__label">默认策略</span>
+              <strong>{{ defaultOpportunityModeLabel }}</strong>
+              <p>{{ defaultConfigForm.runInvestigationAfterScreening ? '默认先初筛，再自动进入深查。' : '默认仅执行初筛。' }}</p>
+            </article>
+
+            <article class="detail-item-card">
+              <span class="detail-item-card__label">补充关键词</span>
+              <div class="chip-group">
+                <span v-for="item in defaultExtraKeywordList" :key="`default-extra-detail-${item}`" class="tag">
+                  {{ item }}
+                </span>
+                <span v-if="!defaultExtraKeywordList.length" class="tag">无</span>
+              </div>
+            </article>
+          </div>
+
+          <div class="detail-item-list detail-item-list--double">
+            <article class="detail-item-card">
+              <span class="detail-item-card__label">默认主题</span>
+              <div class="chip-group">
+                <span v-for="item in defaultTopicLabels" :key="`default-topic-detail-${item}`" class="tag">
+                  {{ item }}
+                </span>
+                <span v-if="!defaultTopicLabels.length" class="tag">无</span>
+              </div>
+            </article>
+
+            <article class="detail-item-card">
+              <span class="detail-item-card__label">默认信号源</span>
+              <div class="chip-group">
+                <span v-for="item in defaultSourceLabels" :key="`default-source-detail-${item}`" class="tag">
+                  {{ item }}
+                </span>
+                <span v-if="!defaultSourceLabels.length" class="tag">无</span>
+              </div>
+            </article>
+          </div>
+        </template>
+
+        <template v-else-if="activeConfigDetailView === 'runtime_scope'">
+          <div class="scope-summary__grid">
+            <div v-for="item in currentScopeSummary" :key="item.label" class="summary-card">
+              <span>{{ item.label }}</span>
+              <strong>{{ item.value }}</strong>
+            </div>
+          </div>
+
+          <div v-if="isScreeningStart" class="detail-item-list detail-item-list--double">
+            <article class="detail-item-card">
+              <span class="detail-item-card__label">默认策略</span>
+              <strong>{{ defaultOpportunityModeLabel }}</strong>
+              <p>{{ defaultConfigForm.runInvestigationAfterScreening ? '默认已开启初筛后深查。' : '默认模式为仅初筛。' }}</p>
+            </article>
+
+            <article class="detail-item-card">
+              <span class="detail-item-card__label">本轮策略</span>
+              <strong>{{ startForm.screeningOpportunityMode === 'all' ? '全部启用主题' : '仅选中主题' }}</strong>
+              <p>{{ selectedModeSummary.label }}</p>
+            </article>
+          </div>
+
+          <div v-if="isScreeningStart" class="detail-item-list detail-item-list--double">
+            <article class="detail-item-card">
+              <span class="detail-item-card__label">本轮主题</span>
+              <div class="chip-group">
+                <span v-for="item in selectedTopicLabels" :key="`runtime-topic-${item}`" class="tag">
+                  {{ item }}
+                </span>
+                <span v-if="!selectedTopicLabels.length" class="tag">无</span>
+              </div>
+            </article>
+
+            <article class="detail-item-card">
+              <span class="detail-item-card__label">本轮信号源</span>
+              <div class="chip-group">
+                <span v-for="item in selectedSourceLabels" :key="`runtime-source-${item}`" class="tag">
+                  {{ item }}
+                </span>
+                <span v-if="!selectedSourceLabels.length" class="tag">无</span>
+              </div>
+            </article>
+          </div>
+
+          <article v-if="isScreeningStart" class="detail-item-card">
+            <span class="detail-item-card__label">本轮补充关键词</span>
+            <div class="chip-group">
+              <span v-for="item in startExtraKeywordList" :key="`runtime-extra-${item}`" class="tag">
+                {{ item }}
+              </span>
+              <span v-if="!startExtraKeywordList.length" class="tag">无</span>
+            </div>
+          </article>
+        </template>
+
+        <template v-else-if="activeConfigDetailView === 'topics'">
+          <div class="detail-item-list">
+            <article
+              v-for="item in availableTopicOptions"
+              :key="`topic-detail-${item.id}`"
+              class="detail-item-card"
+            >
+              <div class="detail-item-card__top">
+                <div>
+                  <strong>{{ item.label }}</strong>
+                  <p>{{ item.description || '暂无说明' }}</p>
+                </div>
+                <div class="chip-group">
+                  <span class="tag" :class="{ 'tag--active': isTopicEnabledInDefault(item.id) }">
+                    {{ isTopicEnabledInDefault(item.id) ? '默认启用' : '默认关闭' }}
+                  </span>
+                  <span class="tag" :class="{ 'tag--active': isTopicEnabledInCurrent(item.id) }">
+                    {{ isTopicEnabledInCurrent(item.id) ? '本轮启用' : '本轮关闭' }}
+                  </span>
+                </div>
+              </div>
+              <div class="detail-item-card__subgroup">
+                <span class="detail-item-card__label">关键词</span>
+                <div class="chip-group">
+                  <span v-for="keyword in item.keywords" :key="`topic-keyword-detail-${item.id}-${keyword}`" class="tag">
+                    {{ keyword }}
+                  </span>
+                  <span v-if="!item.keywords.length" class="tag">未配置关键词</span>
+                </div>
+              </div>
+            </article>
+            <div v-if="!availableTopicOptions.length" class="empty-card">当前没有可展示的主题订阅。</div>
+          </div>
+        </template>
+
+        <template v-else-if="activeConfigDetailView === 'sources'">
+          <div class="detail-item-list">
+            <article
+              v-for="item in availableSourceOptions"
+              :key="`source-detail-${item.id}`"
+              class="detail-item-card"
+            >
+              <div class="detail-item-card__top">
+                <div>
+                  <strong>{{ item.label }}</strong>
+                  <p>{{ item.description || '暂无说明' }}</p>
+                </div>
+                <div class="chip-group">
+                  <span class="tag" :class="{ 'tag--active': isSourceEnabledInDefault(item.id) }">
+                    {{ isSourceEnabledInDefault(item.id) ? '默认启用' : '默认关闭' }}
+                  </span>
+                  <span class="tag" :class="{ 'tag--active': isSourceEnabledInCurrent(item.id) }">
+                    {{ isSourceEnabledInCurrent(item.id) ? '本轮启用' : '本轮关闭' }}
+                  </span>
+                </div>
+              </div>
+              <div class="detail-item-card__subgroup">
+                <span class="detail-item-card__label">信号源 ID</span>
+                <div class="chip-group">
+                  <span class="tag">{{ item.id }}</span>
+                </div>
+              </div>
+            </article>
+            <div v-if="!availableSourceOptions.length" class="empty-card">当前没有可展示的信号源。</div>
+          </div>
+        </template>
+
+        <div class="modal-panel__footer">
+          <button class="button-secondary" type="button" @click="closeConfigDetailModal">
+            关闭
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div
       v-if="isSystemConfigModalOpen"
       class="modal-backdrop"
       @click.self="isSystemConfigModalOpen = false"
@@ -1382,7 +1563,7 @@ function taskResultPreview() {
       <div class="modal-panel">
         <div class="modal-panel__header">
           <div>
-            <p class="section-eyebrow">System Config</p>
+            <p class="section-eyebrow">系统配置</p>
             <h3>系统级配置</h3>
           </div>
           <button class="button-secondary" type="button" @click="isSystemConfigModalOpen = false">
@@ -1392,7 +1573,7 @@ function taskResultPreview() {
 
         <div class="modal-form-grid">
           <label class="field">
-            <span>OpenAI API Key</span>
+            <span>OpenAI API 密钥</span>
             <input
               v-model.trim="systemConfigForm.openAiApiKey"
               type="password"
@@ -1401,12 +1582,12 @@ function taskResultPreview() {
           </label>
 
           <label class="field">
-            <span>OpenAI Base URL</span>
+            <span>OpenAI 接口地址</span>
             <input v-model.trim="systemConfigForm.openAiBaseUrl" type="text" />
           </label>
 
           <label class="field">
-            <span>Anthropic API Key</span>
+            <span>Anthropic API 密钥</span>
             <input
               v-model.trim="systemConfigForm.anthropicApiKey"
               type="password"
@@ -1415,12 +1596,12 @@ function taskResultPreview() {
           </label>
 
           <label class="field">
-            <span>Anthropic Base URL</span>
+            <span>Anthropic 接口地址</span>
             <input v-model.trim="systemConfigForm.anthropicBaseUrl" type="text" />
           </label>
 
           <label class="field">
-            <span>Tavily API Key</span>
+            <span>Tavily API 密钥</span>
             <input
               v-model.trim="systemConfigForm.tavilyApiKey"
               type="password"
@@ -1468,7 +1649,7 @@ function taskResultPreview() {
       <div class="modal-panel modal-panel--wide">
         <div class="modal-panel__header">
           <div>
-            <p class="section-eyebrow">Default Screening Config</p>
+            <p class="section-eyebrow">默认筛选配置</p>
             <h3>默认筛选配置</h3>
           </div>
           <button class="button-secondary" type="button" @click="isDefaultConfigModalOpen = false">
@@ -1596,7 +1777,7 @@ function taskResultPreview() {
       <div class="modal-panel modal-panel--wide">
         <div class="modal-panel__header">
           <div>
-            <p class="section-eyebrow">Signal Source</p>
+            <p class="section-eyebrow">信号源</p>
             <h3>新增信号源</h3>
           </div>
           <button class="button-secondary" type="button" @click="isSignalSourceModalOpen = false">
@@ -1607,7 +1788,7 @@ function taskResultPreview() {
         <div class="modal-form-grid">
           <label class="field">
             <span>信号源 ID</span>
-            <input v-model.trim="signalSourceForm.id" type="text" placeholder="不填则自动生成" />
+            <input v-model.trim="signalSourceForm.id" type="text" placeholder="不填写则自动生成" />
           </label>
 
           <label class="field">
@@ -1695,7 +1876,7 @@ function taskResultPreview() {
       <div class="modal-panel modal-panel--wide">
         <div class="modal-panel__header">
           <div>
-            <p class="section-eyebrow">Keyword Subscription</p>
+            <p class="section-eyebrow">主题订阅</p>
             <h3>新增关键词主题</h3>
           </div>
           <button
@@ -1713,7 +1894,7 @@ function taskResultPreview() {
             <input
               v-model.trim="keywordSubscriptionForm.id"
               type="text"
-              placeholder="不填则自动生成"
+              placeholder="不填写则自动生成"
             />
           </label>
 
@@ -1746,7 +1927,7 @@ function taskResultPreview() {
           <div class="selection-block__header">
             <div>
               <strong>推荐信号源</strong>
-              <span>可选，帮助这个主题优先匹配适合的站点来源。</span>
+              <span>可选，帮助这个主题优先匹配更合适的站点来源。</span>
             </div>
           </div>
           <div class="option-grid">

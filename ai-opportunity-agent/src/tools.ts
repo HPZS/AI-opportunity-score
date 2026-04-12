@@ -726,6 +726,73 @@ const BUSINESS_MODULE_SIGNAL_KEYWORDS = [
   "公文",
   "客服",
 ];
+const DIGITAL_SERVICE_PROJECT_KEYWORDS = [
+  "平台",
+  "系统",
+  "服务",
+  "软件",
+  "数字化",
+  "信息化",
+  "智能",
+  "数据",
+  "知识库",
+  "监管",
+  "审批",
+  "热线",
+  "视频",
+  "预警",
+  "评标",
+  "合同",
+  "履约",
+];
+const GENERIC_PROCUREMENT_NOISE_KEYWORDS = [
+  "工程",
+  "施工",
+  "勘察",
+  "监理",
+  "修缮",
+  "养护",
+  "物业",
+  "保洁",
+  "绿化",
+  "道路",
+  "桥梁",
+  "园林",
+  "管道",
+  "食堂",
+  "车辆",
+  "校服",
+  "保安",
+  "消防",
+  "电梯",
+  "家具",
+  "耗材",
+  "药品",
+  "试剂",
+  "空调",
+  "供暖",
+];
+const SUBSCRIPTION_RESULT_KEYWORD_ALIASES: Record<string, string[]> = {
+  hotline_upgrade: ["12345", "便民热线", "接诉即办", "热线平台", "工单"],
+  document_office: ["公文", "收文", "发文", "办文", "材料审核", "档案"],
+  service_knowledge: ["惠企", "政策兑现", "免申即享", "政策匹配", "申报", "企业服务", "政策直达", "专项资金"],
+  smart_approval: ["一网通办", "导办", "帮办", "代办", "审批", "办事指南", "事项梳理"],
+  bidding_compliance: ["评标", "评审", "采购文件", "投标文件", "电子招投标", "合规", "围串标"],
+  contract_review: ["合同", "履约", "条款", "协议", "付款", "验收", "合同管理"],
+  service_quality: ["执法", "监管", "巡查", "双随机", "合规检查", "非现场"],
+  risk_monitoring: ["城市运行", "风险预警", "应急值守", "态势感知", "监测", "事件研判"],
+  video_governance: ["视频", "巡检", "摄像头", "事件识别", "视觉分析", "告警联动"],
+  data_governance: ["数据治理", "主数据", "指标", "数据资产", "数据目录", "数据质量"],
+};
+const TITLE_ANCHORED_SUBSCRIPTIONS = new Set([
+  "document_office",
+  "service_knowledge",
+  "contract_review",
+]);
+const PROCUREMENT_STRICT_KEYWORDS: Record<string, string[]> = {
+  bidding_compliance: ["采购文件", "投标文件", "电子招投标", "合规", "围串标", "评标辅助"],
+  contract_review: ["合同", "履约", "条款", "协议", "验收", "付款", "合同管理"],
+};
 const GENERIC_SEARCH_RESULT_TITLE_PATTERNS = [
   /^一[、，.．]/u,
   /^二[、，.．]/u,
@@ -876,6 +943,59 @@ function isClearlyOutdatedSignal(dateText: string | null, inferredDays: number |
   return ageDays > inferredDays + 30;
 }
 
+function isClearlyFutureSignal(dateText: string | null): boolean {
+  if (!dateText) return false;
+  const date = new Date(dateText);
+  if (Number.isNaN(date.getTime())) return false;
+  const futureDays = (date.getTime() - Date.now()) / (24 * 60 * 60 * 1000);
+  return futureDays > 7;
+}
+
+function getSubscriptionSearchKeywords(
+  subscriptionId: string | null | undefined,
+): string[] {
+  if (!subscriptionId) return [];
+  const subscription = getKeywordSubscription(subscriptionId);
+  return Array.from(
+    new Set([
+      ...(subscription?.keywords || []),
+      ...(SUBSCRIPTION_RESULT_KEYWORD_ALIASES[subscriptionId] || []),
+    ]),
+  );
+}
+
+function passesSubscriptionTitleGuard(
+  subscriptionId: string | null | undefined,
+  title: string,
+  snippet: string,
+): boolean {
+  if (!subscriptionId) return true;
+
+  const normalizedTitle = normalizeWhitespace(title);
+  const strictKeywords = PROCUREMENT_STRICT_KEYWORDS[subscriptionId] || [];
+
+  if (subscriptionId === "document_office") {
+    return containsPositiveKeyword(normalizedTitle, ["公文", "收文", "发文", "办文", "档案", "文稿"]);
+  }
+
+  if (subscriptionId === "service_knowledge") {
+    return containsPositiveKeyword(normalizedTitle, ["惠企", "政策兑现", "免申即享", "申报", "企业服务", "政策直达", "专项资金"]);
+  }
+
+  if (subscriptionId === "bidding_compliance") {
+    return (
+      containsPositiveKeyword(`${title} ${snippet}`, strictKeywords) &&
+      containsPositiveKeyword(`${title} ${snippet}`, DIGITAL_SERVICE_PROJECT_KEYWORDS)
+    );
+  }
+
+  if (subscriptionId === "contract_review") {
+    return containsPositiveKeyword(normalizedTitle, strictKeywords);
+  }
+
+  return true;
+}
+
 function evaluateHotlineSearchResult(input: {
   title: string;
   snippet: string;
@@ -961,6 +1081,158 @@ function evaluateHotlineSearchResult(input: {
 
   if (!publishedDate && isClearlyOutdatedSignal(coarseDateSignal, inferredDays)) {
     return { keep: false, reason: "clearly_outdated" };
+  }
+
+  if (isClearlyFutureSignal(publishedDate || coarseDateSignal)) {
+    return { keep: false, reason: "clearly_future_dated" };
+  }
+
+  if (
+    isPdf &&
+    inferredDays &&
+    urlDate &&
+    !publishedDate &&
+    !isWithinDays(urlDate, inferredDays)
+  ) {
+    return { keep: false, reason: "pdf_url_date_out_of_window" };
+  }
+
+  return { keep: true, reason: "keep_default" };
+}
+
+function evaluateSubscriptionSearchResult(input: {
+  title: string;
+  snippet: string;
+  url: string;
+  domain: string;
+  publishedDate: string;
+  sourceProfileIds: string[];
+  subscriptionId: string | null;
+  hotlineFocused: boolean;
+  inferredDays: number | null;
+}): { keep: boolean; reason: string } {
+  const {
+    title,
+    snippet,
+    url,
+    domain,
+    publishedDate,
+    sourceProfileIds,
+    subscriptionId,
+    hotlineFocused,
+    inferredDays,
+  } = input;
+
+  if (subscriptionId === "hotline_upgrade") {
+    return evaluateHotlineSearchResult({
+      title,
+      snippet,
+      url,
+      domain,
+      publishedDate,
+      sourceProfileIds,
+      hotlineFocused,
+      inferredDays,
+    });
+  }
+
+  const combined = normalizeWhitespace(`${title} ${snippet} ${url}`);
+  const normalizedTitle = normalizeWhitespace(title);
+  const subscriptionKeywords = getSubscriptionSearchKeywords(subscriptionId);
+  const keywordHits = countPositiveKeywordHits(combined, subscriptionKeywords);
+  const titleKeywordHits = countPositiveKeywordHits(
+    normalizedTitle,
+    subscriptionKeywords,
+  );
+  const isGovPortal = isGovernmentPortalDomain(domain);
+  const isProcurementLike = isProcurementOrTradingDomain(domain);
+  const isPdf = isPdfUrl(url);
+  const titleIsGeneric = isGenericSearchResultTitle(title);
+  const hasExecutionSignal = hasSearchExecutionSignal(title, snippet, url);
+  const hasDigitalCue = containsPositiveKeyword(
+    combined,
+    DIGITAL_SERVICE_PROJECT_KEYWORDS,
+  );
+  const hasGenericProcurementNoise = containsAnyKeyword(
+    combined,
+    GENERIC_PROCUREMENT_NOISE_KEYWORDS,
+  );
+  const strictKeywords = PROCUREMENT_STRICT_KEYWORDS[subscriptionId || ""] || [];
+  const strictKeywordHits = countPositiveKeywordHits(combined, strictKeywords);
+  const urlDate = extractDateFromUrl(url) || extractYearMonthFromUrl(url) || extractYearFromUrl(url);
+  const coarseDateSignal = extractCoarseDateSignal(`${title} ${snippet}`) || urlDate;
+
+  if (subscriptionKeywords.length > 0 && keywordHits <= 0) {
+    return { keep: false, reason: "missing_subscription_keyword" };
+  }
+
+  if (titleIsGeneric && titleKeywordHits <= 0) {
+    return { keep: false, reason: "generic_title_without_subscription_anchor" };
+  }
+
+  if (
+    subscriptionId &&
+    TITLE_ANCHORED_SUBSCRIPTIONS.has(subscriptionId) &&
+    titleKeywordHits <= 0
+  ) {
+    return { keep: false, reason: "title_without_subscription_anchor" };
+  }
+
+  if (
+    isGovPortal &&
+    isGovernmentReportNoise(title, snippet) &&
+    titleKeywordHits <= 0 &&
+    !hasExecutionSignal
+  ) {
+    return { keep: false, reason: "government_report_noise" };
+  }
+
+  if (
+    isProcurementLike &&
+    hasGenericProcurementNoise &&
+    !hasDigitalCue
+  ) {
+    return { keep: false, reason: "generic_procurement_noise" };
+  }
+
+  if (
+    subscriptionId === "bidding_compliance" &&
+    (strictKeywordHits <= 0 || !hasDigitalCue)
+  ) {
+    return { keep: false, reason: "missing_strict_bidding_signal" };
+  }
+
+  if (
+    subscriptionId === "contract_review" &&
+    strictKeywordHits <= 0
+  ) {
+    return { keep: false, reason: "missing_strict_contract_signal" };
+  }
+
+  if (
+    containsBudgetDocumentSignal(combined) &&
+    !containsFormalAdvanceSignal(combined) &&
+    !containsProjectBodySignal(combined)
+  ) {
+    return { keep: false, reason: "budget_without_formal_signal" };
+  }
+
+  if (
+    inferredDays &&
+    !publishedDate &&
+    !coarseDateSignal &&
+    isProcurementLike &&
+    !hasExecutionSignal
+  ) {
+    return { keep: false, reason: "missing_date_signal" };
+  }
+
+  if (!publishedDate && isClearlyOutdatedSignal(coarseDateSignal, inferredDays)) {
+    return { keep: false, reason: "clearly_outdated" };
+  }
+
+  if (isClearlyFutureSignal(publishedDate || coarseDateSignal)) {
+    return { keep: false, reason: "clearly_future_dated" };
   }
 
   if (
@@ -2197,6 +2469,50 @@ function deriveDomain(url: string): string {
   }
 }
 
+function isGenericPortalHomepage(
+  title: string,
+  url: string,
+  domain: string,
+  sourceProfileIds: string[],
+): boolean {
+  const hasProcurementLike =
+    sourceProfileIds.includes("procurement_portals") ||
+    sourceProfileIds.includes("trading_platforms") ||
+    sourceProfileIds.includes("bidding_announcements");
+  if (!hasProcurementLike) return false;
+
+  const normalizedTitle = title.replace(/\s+/g, "").trim();
+  const normalizedUrl = url.toLowerCase();
+  const homepageTitles = new Set([
+    "全国公共资源交易平台",
+    "国家公共资源交易平台",
+    "中国政府采购网",
+  ]);
+
+  if (homepageTitles.has(normalizedTitle)) {
+    return true;
+  }
+
+  if (
+    (domain === "www.ggzy.gov.cn" || domain === "ggzy.gov.cn") &&
+    (/^https?:\/\/(?:www\.)?ggzy\.gov\.cn\/?$/u.test(normalizedUrl) ||
+      /^https?:\/\/(?:www\.)?ggzy\.gov\.cn\/information\/?$/u.test(
+        normalizedUrl,
+      ))
+  ) {
+    return true;
+  }
+
+  if (
+    (domain === "www.ccgp.gov.cn" || domain === "ccgp.gov.cn") &&
+    /^https?:\/\/(?:www\.)?ccgp\.gov\.cn\/?$/u.test(normalizedUrl)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
 function collectMatchedKeywords(text: string): string[] {
   const lower = text.toLowerCase();
   const hits = new Set<string>();
@@ -2270,97 +2586,207 @@ async function searchWeb(input: Record<string, unknown>): Promise<string> {
     ? mergeStringArrays(mergedProfiles.includeDomains, explicitIncludeDomains)
     : explicitIncludeDomains;
   const excludeDomains = mergeStringArrays(mergedProfiles.excludeDomains, explicitExcludeDomains);
-  const body = {
-    api_key: apiKey,
-    query,
-    max_results: typeof input.max_results === "number" ? input.max_results : 5,
-    topic: safeString(input.topic) || "general",
-    include_domains: includeDomains,
-    exclude_domains: excludeDomains,
-    search_depth: "advanced",
-    include_raw_content: false,
-    ...(dateWindow ? { start_date: dateWindow.start, end_date: dateWindow.end } : {}),
+  const maxResults = typeof input.max_results === "number" ? input.max_results : 5;
+  const topic = safeString(input.topic) || "general";
+  const shouldFilterBySourceProfile = builtQuery.resolvedProfileIds.length > 0;
+
+  const executeSearchAttempt = async (attemptQuery: string) => {
+    const body = {
+      api_key: apiKey,
+      query: attemptQuery,
+      max_results: maxResults,
+      topic,
+      include_domains: includeDomains,
+      exclude_domains: excludeDomains,
+      search_depth: "advanced",
+      include_raw_content: false,
+      ...(dateWindow ? { start_date: dateWindow.start, end_date: dateWindow.end } : {}),
+    };
+    const response = await fetch(TAVILY_ENDPOINT, {
+      method: "POST",
+      headers: DEFAULT_HEADERS,
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Tavily 检索失败: ${response.status} ${truncateText(text, 300)}`);
+    }
+
+    const data = await response.json() as JsonObject;
+    const results = Array.isArray(data.results) ? data.results : [];
+    const shouldFilterHotline = isHotlineFocusedSearch(attemptQuery, subscription?.id || null);
+    const normalizedResults = results.map((item) => {
+      const row = (item ?? {}) as JsonObject;
+      const title = safeString(row.title);
+      const snippet = safeString(row.content);
+      const publishedDate = safeString(row.published_date);
+      const url = normalizeUrl(safeString(row.url));
+      const urlDate = extractDateFromUrl(url) || extractYearMonthFromUrl(url) || extractYearFromUrl(url);
+      const inferredPublish = publishedDate
+        ? publishedDate
+        : extractPublishTime(`${title} ${snippet}`).normalized || urlDate;
+      const withinWindow = inferredDays ? isWithinDays(inferredPublish || publishedDate, inferredDays) : null;
+      return {
+        title,
+        url,
+        content: truncateText(snippet, 800),
+        published_date: inferredPublish || publishedDate,
+        domain: deriveDomain(url),
+        within_time_window: withinWindow,
+      };
+    });
+    const withinWindowResults = normalizedResults.filter((item) => item.within_time_window !== false);
+    const sourceProfileResults = withinWindowResults.filter((item) =>
+      !shouldFilterBySourceProfile ||
+      (
+        isAllowedUrlBySourceProfiles(item.url, builtQuery.resolvedProfileIds) &&
+        isAllowedBySourceProfiles(item.domain, builtQuery.resolvedProfileIds)
+      )
+    );
+    const filteredHomepageResults = sourceProfileResults.filter((item) =>
+      !isGenericPortalHomepage(
+        item.title,
+        item.url,
+        item.domain,
+        builtQuery.resolvedProfileIds,
+      )
+    );
+    const filteredListingResults = filteredHomepageResults.filter((item) =>
+      !isListingLikeOpportunityPage(item.title, item.url, item.content)
+    );
+    const futureDateFilteredResults = filteredListingResults.filter((item) =>
+      !isClearlyFutureSignal(safeString(item.published_date))
+    );
+    const titleGuardedResults = futureDateFilteredResults.filter((item) =>
+      passesSubscriptionTitleGuard(subscription?.id || null, item.title, item.content)
+    );
+    const hotlineAnchorResults = titleGuardedResults.filter((item) =>
+      !shouldFilterHotline ||
+      !isGovernmentPortalDomain(item.domain) ||
+      containsAnyKeyword(`${item.title} ${item.url}`, HOTLINE_ANCHOR_KEYWORDS)
+    );
+    const semanticEvaluatedResults = hotlineAnchorResults.map((item) => ({
+      ...item,
+      semanticDecision: evaluateSubscriptionSearchResult({
+        title: item.title,
+        snippet: item.content,
+        url: item.url,
+        domain: item.domain,
+        publishedDate: safeString(item.published_date),
+        sourceProfileIds: builtQuery.resolvedProfileIds,
+        subscriptionId: subscription?.id || null,
+        hotlineFocused: shouldFilterHotline,
+        inferredDays,
+      }),
+    }));
+    const normalized = semanticEvaluatedResults
+      .filter((item) => item.semanticDecision.keep)
+      .map(({ semanticDecision, ...item }) => item);
+    const droppedSemanticSamples = semanticEvaluatedResults
+      .filter((item) => !item.semanticDecision.keep)
+      .slice(0, 5)
+      .map((item) => ({
+        title: item.title,
+        domain: item.domain,
+        published_date: item.published_date,
+        reason: item.semanticDecision.reason,
+        url: item.url,
+      }));
+
+    return {
+      query: attemptQuery,
+      rawResultCount: normalizedResults.length,
+      filterStats: {
+        droppedOutOfWindowCount: normalizedResults.length - withinWindowResults.length,
+        droppedBySourceProfileCount: withinWindowResults.length - sourceProfileResults.length,
+        droppedByGenericHomepageCount: sourceProfileResults.length - filteredHomepageResults.length,
+        droppedByListingPageCount: filteredHomepageResults.length - filteredListingResults.length,
+        droppedByFutureDateCount: filteredListingResults.length - futureDateFilteredResults.length,
+        droppedByTitleGuardCount: futureDateFilteredResults.length - titleGuardedResults.length,
+        droppedByGovernmentAnchorCount: titleGuardedResults.length - hotlineAnchorResults.length,
+        droppedBySemanticFilterCount: hotlineAnchorResults.length - normalized.length,
+      },
+      droppedSemanticSamples,
+      resultCount: normalized.length,
+      results: normalized,
+    };
   };
 
-  const response = await fetch(TAVILY_ENDPOINT, {
-    method: "POST",
-    headers: DEFAULT_HEADERS,
-    body: JSON.stringify(body),
-  });
+  const candidateQueries = Array.from(
+    new Set([query, ...(builtQuery.alternativeQueries || [])].filter(Boolean)),
+  );
+  const attempts: Array<
+    | {
+        query: string;
+        rawResultCount: number;
+        filterStats: Record<string, number>;
+        droppedSemanticSamples: Array<Record<string, string>>;
+        resultCount: number;
+        results: Array<Record<string, unknown>>;
+      }
+    | { query: string; error: string }
+  > = [];
 
-  if (!response.ok) {
-    const text = await response.text();
-    return JSON.stringify({ error: `Tavily 检索失败: ${response.status}`, details: truncateText(text, 1000) }, null, 2);
+  for (const candidateQuery of candidateQueries) {
+    try {
+      const attempt = await executeSearchAttempt(candidateQuery);
+      attempts.push(attempt);
+      if (attempt.resultCount > 0) break;
+    } catch (error) {
+      attempts.push({
+        query: candidateQuery,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
-  const data = await response.json() as JsonObject;
-  const results = Array.isArray(data.results) ? data.results : [];
-  const shouldFilterHotline = isHotlineFocusedSearch(query, subscription?.id || null);
-  const shouldFilterBySourceProfile = builtQuery.resolvedProfileIds.length > 0;
-  const normalizedResults = results.map((item) => {
-    const row = (item ?? {}) as JsonObject;
-    const title = safeString(row.title);
-    const snippet = safeString(row.content);
-    const publishedDate = safeString(row.published_date);
-    const url = normalizeUrl(safeString(row.url));
-    const urlDate = extractDateFromUrl(url) || extractYearMonthFromUrl(url) || extractYearFromUrl(url);
-    const inferredPublish = publishedDate
-      ? publishedDate
-      : extractPublishTime(`${title} ${snippet}`).normalized || urlDate;
-    const withinWindow = inferredDays ? isWithinDays(inferredPublish || publishedDate, inferredDays) : null;
-    return {
-      title,
-      url,
-      content: truncateText(snippet, 800),
-      published_date: inferredPublish || publishedDate,
-      domain: deriveDomain(url),
-      within_time_window: withinWindow,
-    };
-  });
-  const withinWindowResults = normalizedResults.filter((item) => item.within_time_window !== false);
-  const sourceProfileResults = withinWindowResults.filter((item) =>
-    !shouldFilterBySourceProfile ||
-    (
-      isAllowedUrlBySourceProfiles(item.url, builtQuery.resolvedProfileIds) &&
-      isAllowedBySourceProfiles(item.domain, builtQuery.resolvedProfileIds)
-    )
+  const successfulAttempts = attempts.filter(
+    (item): item is {
+      query: string;
+      rawResultCount: number;
+      filterStats: Record<string, number>;
+      droppedSemanticSamples: Array<Record<string, string>>;
+      resultCount: number;
+      results: Array<Record<string, unknown>>;
+    } => "resultCount" in item,
   );
-  const hotlineAnchorResults = sourceProfileResults.filter((item) =>
-    !shouldFilterHotline ||
-    !isGovernmentPortalDomain(item.domain) ||
-    containsAnyKeyword(`${item.title} ${item.url}`, HOTLINE_ANCHOR_KEYWORDS)
-  );
-  const semanticEvaluatedResults = hotlineAnchorResults.map((item) => ({
-    ...item,
-    semanticDecision: evaluateHotlineSearchResult({
-      title: item.title,
-      snippet: item.content,
-      url: item.url,
-      domain: item.domain,
-      publishedDate: safeString(item.published_date),
-      sourceProfileIds: builtQuery.resolvedProfileIds,
-      hotlineFocused: shouldFilterHotline,
-      inferredDays,
-    }),
-  }));
-  const normalized = semanticEvaluatedResults
-    .filter((item) => item.semanticDecision.keep)
-    .map(({ semanticDecision, ...item }) => item);
-  const droppedSemanticSamples = semanticEvaluatedResults
-    .filter((item) => !item.semanticDecision.keep)
-    .slice(0, 5)
-    .map((item) => ({
-      title: item.title,
-      domain: item.domain,
-      published_date: item.published_date,
-      reason: item.semanticDecision.reason,
-      url: item.url,
-    }));
+  const bestAttempt =
+    successfulAttempts.sort(
+      (a, b) =>
+        b.resultCount - a.resultCount ||
+        b.rawResultCount - a.rawResultCount,
+    )[0] || null;
+
+  if (!bestAttempt) {
+    const errorAttempt = attempts.find((item) => "error" in item);
+    return JSON.stringify(
+      {
+        error: errorAttempt && "error" in errorAttempt ? errorAttempt.error : "Tavily 检索失败",
+        query,
+        attemptedQueries: candidateQueries,
+        attempts,
+      },
+      null,
+      2,
+    );
+  }
 
   return JSON.stringify(
     {
-      query: body.query,
+      query: bestAttempt.query,
       baseQuery,
+      attemptedQueries: candidateQueries,
+      attempts: attempts.map((item) =>
+        "error" in item
+          ? item
+          : {
+              query: item.query,
+              rawResultCount: item.rawResultCount,
+              filterStats: item.filterStats,
+              resultCount: item.resultCount,
+            },
+      ),
       sourceProfileIds: builtQuery.resolvedProfileIds,
       documentTypes: builtQuery.documentTypes,
       queryHints: builtQuery.queryHints,
@@ -2371,16 +2797,11 @@ async function searchWeb(input: Record<string, unknown>): Promise<string> {
       excludeDomains,
       timeWindowDays: inferredDays,
       timeWindow: dateWindow,
-      rawResultCount: normalizedResults.length,
-      filterStats: {
-        droppedOutOfWindowCount: normalizedResults.length - withinWindowResults.length,
-        droppedBySourceProfileCount: withinWindowResults.length - sourceProfileResults.length,
-        droppedByGovernmentAnchorCount: sourceProfileResults.length - hotlineAnchorResults.length,
-        droppedBySemanticFilterCount: hotlineAnchorResults.length - normalized.length,
-      },
-      droppedSemanticSamples,
-      resultCount: normalized.length,
-      results: normalized,
+      rawResultCount: bestAttempt.rawResultCount,
+      filterStats: bestAttempt.filterStats,
+      droppedSemanticSamples: bestAttempt.droppedSemanticSamples,
+      resultCount: bestAttempt.resultCount,
+      results: bestAttempt.results,
     },
     null,
     2

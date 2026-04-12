@@ -75,50 +75,50 @@ export interface ScreeningSourceProfileConfig {
 // 场景规则：控制业务场景识别和技术推荐。
 export const SCENARIO_RULES: ScenarioRule[] = [
   {
-    tag: "政务服务",
+    tag: "政务导办",
     keywords: ["政务服务", "办事服务", "一网通办", "便民服务", "政务大厅"],
     technologies: ["大模型问答", "知识库检索", "流程助手"],
   },
   {
-    tag: "热线服务",
+    tag: "热线工单",
     keywords: ["12345", "热线", "工单", "诉求", "派单", "回访"],
     technologies: ["智能问答", "工单辅助分派", "语音识别"],
   },
   {
-    tag: "公文处理",
+    tag: "公文流转",
     keywords: ["公文", "收文", "发文", "文稿", "材料撰写", "公文流转"],
     technologies: ["大模型写作辅助", "智能校对", "知识库检索"],
   },
   {
-    tag: "知识管理",
-    keywords: ["知识库", "知识管理", "资料库", "制度库", "文档中心"],
-    technologies: ["RAG", "智能问答", "知识抽取"],
+    tag: "政策服务",
+    keywords: ["政策服务", "政策兑现", "免申即享", "申报辅导", "企业服务", "政策直达"],
+    technologies: ["智能问答", "政策匹配", "知识抽取"],
   },
   {
-    tag: "招采合规",
+    tag: "招采评审",
     keywords: ["招标", "采购", "投标", "招采", "合规审查", "比选"],
     technologies: ["文档审查", "规则比对", "风险提示"],
     minHits: 2,
   },
   {
-    tag: "合同审核",
+    tag: "合同履约",
     keywords: ["合同审核", "协议审核", "条款审查", "法务审核", "履约审查"],
     technologies: ["合同审查", "条款比对", "风险识别"],
     minHits: 1,
   },
   {
-    tag: "客服质检",
-    keywords: ["客服质检", "质检", "通话录音", "服务评价", "话术质检"],
-    technologies: ["语音识别", "质检分析", "话术辅助"],
+    tag: "执法巡查",
+    keywords: ["行政执法", "执法监督", "非现场监管", "双随机", "执法巡查", "合规检查"],
+    technologies: ["规则比对", "风险识别", "事件研判"],
     minHits: 1,
   },
   {
-    tag: "风险预警",
-    keywords: ["预警", "风险", "监测", "异常", "监管", "舆情"],
+    tag: "城市运行",
+    keywords: ["预警", "风险", "监测", "异常", "监管", "舆情", "应急"],
     technologies: ["风险识别", "事件归因", "趋势分析"],
   },
   {
-    tag: "视频治理",
+    tag: "视频巡检",
     keywords: ["视频监控", "视频巡检", "摄像头", "图像识别", "视觉分析"],
     technologies: ["计算机视觉", "视频结构化", "事件识别"],
     minHits: 1,
@@ -371,49 +371,163 @@ export const SIGNAL_SOURCE_PROFILES: SearchSourceProfile[] = [
 export const KEYWORD_SUBSCRIPTIONS: KeywordSubscription[] = [
   {
     id: "hotline_upgrade",
-    label: "政务热线智能化",
-    description: "12345 热线、热线平台、智能客服、工单分派等相关订阅。",
+    label: "政务热线与工单协同",
+    description: "12345 热线、工单流转、诉求处置、回访督办等相关订阅。",
     keywords: [
       "12345政务服务便民热线",
+      "工单流转",
+      "工单派发",
+      "诉求处置",
+      "回访督办",
+      "热线运营",
+      "接诉即办",
       "热线平台升级",
-      "智能客服",
-      "智能质检",
-      "智能派单",
-      "知识库",
-      "采购意向",
-      "运行维护",
     ],
     preferredSourceProfileIds: ["official_mixed"],
   },
   {
     id: "document_office",
-    label: "公文办公智能化",
-    description: "公文处理、材料写作、知识库与辅助审核等相关订阅。",
+    label: "公文写作与流转审核",
+    description: "公文拟稿、收发文流转、材料审核、督办归档等相关订阅。",
     keywords: [
-      "公文",
-      "发文",
-      "收文",
-      "材料撰写",
-      "智能校对",
-      "知识库",
-      "大模型",
+      "公文写作",
+      "公文流转",
+      "收文管理",
+      "发文管理",
+      "材料审核",
+      "督办督查",
+      "档案归集",
+      "办文效率",
     ],
     preferredSourceProfileIds: ["government_portals", "procurement_portals"],
   },
   {
     id: "service_knowledge",
-    label: "政务知识与问答",
-    description: "知识库、问答助手、咨询导办、智能体相关订阅。",
+    label: "政策服务与惠企申报",
+    description: "惠企政策兑现、政策匹配、申报辅导、免申即享等相关订阅。",
     keywords: [
-      "知识库",
-      "问答",
-      "咨询导办",
-      "智能体",
-      "智能问答",
-      "RAG",
-      "语义检索",
+      "惠企政策",
+      "政策兑现",
+      "免申即享",
+      "政策匹配",
+      "申报辅导",
+      "企业服务",
+      "政策直达",
+      "专项资金申报",
+    ],
+    preferredSourceProfileIds: ["government_portals", "policy_documents", "official_mixed"],
+  },
+  {
+    id: "smart_approval",
+    label: "政务导办与审批协同",
+    description: "一网通办、智能导办、帮办代办、审批协同等相关订阅。",
+    keywords: [
+      "一网通办",
+      "智能导办",
+      "帮办代办",
+      "审批协同",
+      "审批提速",
+      "事项梳理",
+      "办事指南",
+      "政务大厅",
     ],
     preferredSourceProfileIds: ["government_portals", "official_mixed"],
+  },
+  {
+    id: "bidding_compliance",
+    label: "招采评审与合规审查",
+    description: "招标评审、采购文件审查、电子招投标、围串标识别等相关订阅。",
+    keywords: [
+      "招标评审",
+      "采购文件审查",
+      "电子招投标",
+      "合规审查",
+      "围串标识别",
+      "专家评审",
+      "投标文件",
+      "评标辅助",
+    ],
+    preferredSourceProfileIds: ["procurement_portals", "trading_platforms"],
+  },
+  {
+    id: "contract_review",
+    label: "合同审核与履约监管",
+    description: "合同起草审核、条款比对、履约监管、付款验收等相关订阅。",
+    keywords: [
+      "合同审核",
+      "条款比对",
+      "履约监管",
+      "付款审核",
+      "验收管理",
+      "协议审查",
+      "风险条款",
+      "合同管理",
+    ],
+    preferredSourceProfileIds: ["government_portals", "procurement_portals"],
+  },
+  {
+    id: "service_quality",
+    label: "执法检查与合规巡查",
+    description: "行政执法、非现场监管、双随机巡查、合规检查等相关订阅。",
+    keywords: [
+      "行政执法",
+      "执法监督",
+      "非现场监管",
+      "双随机一公开",
+      "执法巡查",
+      "合规检查",
+      "智能监管",
+      "风险巡查",
+    ],
+    preferredSourceProfileIds: ["government_portals", "policy_documents", "official_mixed"],
+  },
+  {
+    id: "risk_monitoring",
+    label: "城市运行监测与风险预警",
+    description: "城市运行、应急值守、风险监测、舆情联动等相关订阅。",
+    keywords: [
+      "城市运行",
+      "风险预警",
+      "应急值守",
+      "态势感知",
+      "异常监测",
+      "舆情联动",
+      "事件研判",
+      "监管预警",
+    ],
+    preferredSourceProfileIds: ["government_portals", "policy_documents", "industry_media"],
+  },
+  {
+    id: "video_governance",
+    label: "视频巡检与事件处置",
+    description: "视频巡检、事件识别、告警联动、处置闭环等相关订阅。",
+    keywords: [
+      "视频巡检",
+      "事件识别",
+      "告警联动",
+      "处置闭环",
+      "视频监控",
+      "智能摄像头",
+      "视觉分析",
+      "视频结构化",
+    ],
+    preferredSourceProfileIds: ["government_portals", "procurement_portals", "trading_platforms"],
+  },
+  {
+    id: "data_governance",
+    label: "数据治理与指标运营",
+    description: "数据治理、数据质量、主数据、指标体系、数据资产等相关订阅。",
+    keywords: [
+      "数据治理",
+      "主数据",
+      "指标管理",
+      "数据资产",
+      "数据目录",
+      "数据标准",
+      "数据质量",
+      "指标运营",
+    ],
+    preferredSourceProfileIds: ["government_portals", "policy_documents", "enterprise_news"],
   },
 ];
 
@@ -424,12 +538,33 @@ export const SCREENING_OPPORTUNITY_TYPE_CONFIG: ScreeningOpportunityTypeConfig =
   {
     mode: "all",
     singleSubscriptionId: "hotline_upgrade",
+    subscriptionIds: [
+      "hotline_upgrade",
+      "document_office",
+      "service_knowledge",
+      "smart_approval",
+      "bidding_compliance",
+      "contract_review",
+      "service_quality",
+      "risk_monitoring",
+      "video_governance",
+      "data_governance"
+    ],
   };
 
 // 初筛默认信号源配置。
 // 这些来源会作为当前 screening 的默认搜索来源预设。
 export const SCREENING_SOURCE_PROFILE_CONFIG: ScreeningSourceProfileConfig = {
-  sourceProfileIds: ["government_portals", "procurement_portals", "trading_platforms"],
+  sourceProfileIds: [
+    "bidding_announcements",
+    "procurement_portals",
+    "official_mixed",
+    "policy_documents",
+    "industry_media",
+    "enterprise_news",
+    "trading_platforms",
+    "government_portals"
+  ],
 };
 
 // 初筛默认补充关键词。
@@ -463,6 +598,72 @@ const SEARCH_QUERY_EXECUTION_KEYWORDS = [
   "升级改造",
   "立项",
 ];
+const GENERIC_GOVERNMENT_QUERY_TOKENS = [
+  "采购意向",
+  "需求征集",
+  "建设方案",
+  "升级改造",
+  "立项",
+  "服务项目",
+  "平台建设",
+  "项目建设",
+];
+const GENERIC_PROCUREMENT_QUERY_TOKENS = [
+  "采购公告",
+  "招标公告",
+  "采购需求",
+  "公开招标",
+  "竞争性磋商",
+  "服务采购",
+  "运维服务",
+  "运行维护",
+];
+
+const SUBSCRIPTION_INTENT_TERMS: Record<
+  string,
+  { procurement: string[]; government: string[] }
+> = {
+  hotline_upgrade: {
+    procurement: ["运营服务", "热线平台", "坐席服务", "服务采购"],
+    government: ["工作方案", "实施方案", "接诉即办", "热线升级"],
+  },
+  document_office: {
+    procurement: ["公文系统", "办文系统", "档案系统", "服务采购"],
+    government: ["工作方案", "实施方案", "公文处理", "办文流程"],
+  },
+  service_knowledge: {
+    procurement: ["政策服务", "申报服务", "兑现平台", "服务采购"],
+    government: ["服务清单", "实施细则", "申报通知", "兑现方案"],
+  },
+  smart_approval: {
+    procurement: ["一网通办", "导办服务", "审批系统", "服务采购"],
+    government: ["办事指南", "实施方案", "事项梳理", "审批流程"],
+  },
+  bidding_compliance: {
+    procurement: ["评标辅助", "电子招投标", "合规审查", "服务采购"],
+    government: ["实施意见", "监管方案", "建设方案", "试点方案"],
+  },
+  contract_review: {
+    procurement: ["合同管理", "履约监管", "条款审核", "服务采购"],
+    government: ["管理办法", "监管方案", "履约检查", "实施方案"],
+  },
+  service_quality: {
+    procurement: ["执法监督平台", "非现场监管", "双随机", "服务采购"],
+    government: ["执法检查", "监管方案", "行动计划", "实施意见"],
+  },
+  risk_monitoring: {
+    procurement: ["监测预警平台", "态势感知", "应急指挥", "服务采购"],
+    government: ["监测预警", "工作方案", "应急值守", "实施方案"],
+  },
+  video_governance: {
+    procurement: ["视频巡检", "事件识别", "视觉分析", "服务采购"],
+    government: ["治理方案", "工作方案", "建设方案", "实施方案"],
+  },
+  data_governance: {
+    procurement: ["数据治理", "主数据", "指标管理", "服务采购"],
+    government: ["数据治理", "工作方案", "管理办法", "数据目录"],
+  },
+};
 
 function unique(items: string[]): string[] {
   return Array.from(new Set(items.filter(Boolean)));
@@ -472,31 +673,90 @@ function includesAnyKeyword(text: string, keywords: string[]): boolean {
   return keywords.some((keyword) => text.includes(keyword.toLowerCase()));
 }
 
-function pickSourceIntentTerms(
-  baseQuery: string,
-  profileIds: string[],
-): string[] {
-  const hasProcurementLike =
+function hasProcurementLikeProfiles(profileIds: string[]): boolean {
+  return (
     profileIds.includes("procurement_portals") ||
     profileIds.includes("trading_platforms") ||
     profileIds.includes("bidding_announcements") ||
-    profileIds.includes("official_mixed");
-  const hasGovernmentOnly =
-    !hasProcurementLike &&
-    (profileIds.includes("government_portals") ||
-      profileIds.includes("policy_documents"));
+    profileIds.includes("official_mixed")
+  );
+}
 
-  const procurementTerms = ["采购公告", "招标公告", "采购需求", "运维服务"];
-  const governmentTerms = ["采购意向", "需求征集", "建设方案", "升级改造"];
-  const candidates = hasProcurementLike
+function hasGovernmentOnlyProfiles(profileIds: string[]): boolean {
+  return (
+    !hasProcurementLikeProfiles(profileIds) &&
+    (profileIds.includes("government_portals") ||
+      profileIds.includes("policy_documents"))
+  );
+}
+
+function stripGenericIntentTokens(
+  baseQuery: string,
+  blockedTokens: string[],
+): string {
+  const normalized = normalizeQueryText(baseQuery);
+  const tokens = normalized.split(/\s+/).filter(Boolean);
+  if (tokens.length <= 1) return normalized;
+
+  const filtered = tokens.filter(
+    (token) =>
+      !blockedTokens.some(
+        (blocked) => token === blocked || token.includes(blocked),
+      ),
+  );
+
+  return filtered.length > 0 ? filtered.join(" ") : normalized;
+}
+
+function normalizeBaseQueryForProfiles(
+  baseQuery: string,
+  profileIds: string[],
+): string {
+  const normalized = normalizeQueryText(baseQuery);
+  if (!normalized) return "";
+
+  if (hasGovernmentOnlyProfiles(profileIds)) {
+    return stripGenericIntentTokens(normalized, GENERIC_GOVERNMENT_QUERY_TOKENS);
+  }
+
+  if (hasProcurementLikeProfiles(profileIds)) {
+    return stripGenericIntentTokens(normalized, GENERIC_PROCUREMENT_QUERY_TOKENS);
+  }
+
+  return normalized;
+}
+
+function pickSourceIntentTerms(
+  baseQuery: string,
+  profileIds: string[],
+  subscriptionId?: string,
+  offset = 0,
+  limit = 2,
+): string[] {
+  const scenarioTerms = subscriptionId
+    ? SUBSCRIPTION_INTENT_TERMS[subscriptionId]
+    : undefined;
+  const procurementTerms = scenarioTerms?.procurement || [
+    "采购公告",
+    "招标公告",
+    "采购需求",
+    "运维服务",
+  ];
+  const governmentTerms = scenarioTerms?.government || [
+    "采购意向",
+    "需求征集",
+    "建设方案",
+    "升级改造",
+  ];
+  const candidates = hasProcurementLikeProfiles(profileIds)
     ? procurementTerms
-    : hasGovernmentOnly
+    : hasGovernmentOnlyProfiles(profileIds)
       ? governmentTerms
       : [];
 
   return candidates
     .filter((item) => !baseQuery.includes(item.toLowerCase()))
-    .slice(0, 1);
+    .slice(offset, offset + limit);
 }
 
 function pickSubscriptionBoostTerms(
@@ -521,6 +781,24 @@ function pickSubscriptionBoostTerms(
   }
 
   return parts.slice(0, 2);
+}
+
+function pickSubscriptionKeywordTerms(
+  baseQuery: string,
+  subscriptionId?: string,
+  offset = 0,
+  limit = 2,
+): string[] {
+  const subscription = subscriptionId
+    ? getKeywordSubscription(subscriptionId)
+    : undefined;
+  if (!subscription) return [];
+
+  return subscription.keywords
+    .map((item) => normalizeQueryText(item))
+    .filter(Boolean)
+    .filter((item) => !baseQuery.includes(item))
+    .slice(offset, offset + limit);
 }
 
 function pickExtraIntentTerms(baseQuery: string, items: string[]): string[] {
@@ -557,6 +835,178 @@ export function getKeywordSubscription(
   id: string,
 ): KeywordSubscription | undefined {
   return KEYWORD_SUBSCRIPTIONS.find((item) => item.id === id);
+}
+
+export interface ScreeningTopicExecutionPlan {
+  subscriptionId: string;
+  label: string;
+  keywords: string[];
+  sourceProfileIds: string[];
+  sourceLabels: string[];
+}
+
+const SOURCE_PROFILE_PRIORITY = [
+  "procurement_portals",
+  "trading_platforms",
+  "bidding_announcements",
+  "government_portals",
+  "policy_documents",
+  "official_mixed",
+  "industry_media",
+  "enterprise_news",
+];
+
+const PROCUREMENT_ORIENTED_SOURCE_IDS = [
+  "procurement_portals",
+  "trading_platforms",
+  "bidding_announcements",
+];
+
+const GOVERNMENT_ORIENTED_SOURCE_IDS = [
+  "government_portals",
+  "policy_documents",
+];
+
+const MIXED_SOURCE_EXPANSIONS: Record<string, string[]> = {
+  official_mixed: [
+    "procurement_portals",
+    "trading_platforms",
+    "bidding_announcements",
+    "government_portals",
+  ],
+};
+
+const PROCUREMENT_INTENT_TERMS = [
+  "采购公告",
+  "招标公告",
+  "采购需求",
+  "公开招标",
+  "竞争性磋商",
+  "服务采购",
+  "中标",
+  "成交结果",
+];
+
+const GOVERNMENT_INTENT_TERMS = [
+  "采购意向",
+  "需求征集",
+  "建设方案",
+  "升级改造",
+  "立项",
+  "实施方案",
+  "工作方案",
+  "项目",
+];
+
+function sortSourceProfileIds(profileIds: string[]): string[] {
+  return [...profileIds].sort((left, right) => {
+    const leftIndex = SOURCE_PROFILE_PRIORITY.indexOf(left);
+    const rightIndex = SOURCE_PROFILE_PRIORITY.indexOf(right);
+    const normalizedLeftIndex = leftIndex === -1 ? SOURCE_PROFILE_PRIORITY.length : leftIndex;
+    const normalizedRightIndex = rightIndex === -1 ? SOURCE_PROFILE_PRIORITY.length : rightIndex;
+    if (normalizedLeftIndex !== normalizedRightIndex) {
+      return normalizedLeftIndex - normalizedRightIndex;
+    }
+    return left.localeCompare(right);
+  });
+}
+
+function sortSourceProfileIdsByReference(profileIds: string[], referenceProfileIds: string[]): string[] {
+  if (referenceProfileIds.length === 0) {
+    return sortSourceProfileIds(profileIds);
+  }
+
+  return [...profileIds].sort((left, right) => {
+    const leftIndex = referenceProfileIds.indexOf(left);
+    const rightIndex = referenceProfileIds.indexOf(right);
+    const normalizedLeftIndex = leftIndex === -1 ? referenceProfileIds.length : leftIndex;
+    const normalizedRightIndex = rightIndex === -1 ? referenceProfileIds.length : rightIndex;
+    if (normalizedLeftIndex !== normalizedRightIndex) {
+      return normalizedLeftIndex - normalizedRightIndex;
+    }
+    return sortSourceProfileIds([left, right])[0] === left ? -1 : 1;
+  });
+}
+
+function expandSourceProfileIds(profileIds: string[]): string[] {
+  return unique(
+    profileIds.flatMap((profileId) => MIXED_SOURCE_EXPANSIONS[profileId] || [profileId]),
+  ).filter((profileId) => !!getSignalSourceProfile(profileId));
+}
+
+function includesAnyTerm(text: string, terms: string[]): boolean {
+  const normalized = normalizeQueryText(text).toLowerCase();
+  if (!normalized) return false;
+  return terms.some((term) => normalized.includes(term.toLowerCase()));
+}
+
+export function resolveSubscriptionScopedSourceProfileIds(
+  profileIds: string[],
+  subscriptionId?: string,
+  baseQuery?: string,
+): string[] {
+  const configuredProfileIds = unique(
+    profileIds.filter((profileId) => typeof profileId === "string" && !!getSignalSourceProfile(profileId)),
+  );
+  const expandedConfiguredProfileIds = expandSourceProfileIds(configuredProfileIds);
+  const subscription = subscriptionId ? getKeywordSubscription(subscriptionId) : undefined;
+  const preferredProfileIds = subscription
+    ? expandSourceProfileIds(subscription.preferredSourceProfileIds || [])
+    : [];
+  const orderedPreferredProfileIds = sortSourceProfileIdsByReference(
+    preferredProfileIds,
+    preferredProfileIds,
+  );
+
+  let candidateProfileIds =
+    preferredProfileIds.length > 0
+      ? expandedConfiguredProfileIds.filter((profileId) => preferredProfileIds.includes(profileId))
+      : expandedConfiguredProfileIds;
+
+  if (candidateProfileIds.length === 0) {
+    candidateProfileIds =
+      expandedConfiguredProfileIds.length > 0 ? expandedConfiguredProfileIds : preferredProfileIds;
+  }
+
+  const normalizedQuery = normalizeQueryText(baseQuery || "");
+  const procurementScopedProfileIds = candidateProfileIds.filter((profileId) =>
+    PROCUREMENT_ORIENTED_SOURCE_IDS.includes(profileId),
+  );
+  const governmentScopedProfileIds = candidateProfileIds.filter((profileId) =>
+    GOVERNMENT_ORIENTED_SOURCE_IDS.includes(profileId),
+  );
+
+  if (includesAnyTerm(normalizedQuery, PROCUREMENT_INTENT_TERMS) && procurementScopedProfileIds.length > 0) {
+    return sortSourceProfileIdsByReference(unique(procurementScopedProfileIds), orderedPreferredProfileIds).slice(0, 2);
+  }
+
+  if (includesAnyTerm(normalizedQuery, GOVERNMENT_INTENT_TERMS) && governmentScopedProfileIds.length > 0) {
+    return sortSourceProfileIdsByReference(unique(governmentScopedProfileIds), orderedPreferredProfileIds).slice(0, 2);
+  }
+
+  return sortSourceProfileIdsByReference(unique(candidateProfileIds), orderedPreferredProfileIds).slice(0, 3);
+}
+
+export function getScreeningTopicExecutionPlans(): ScreeningTopicExecutionPlan[] {
+  const typeSelection = getScreeningOpportunityTypeSelection();
+  const sourceSelection = getScreeningSourceProfileSelection();
+
+  return typeSelection.subscriptionIds.map((subscriptionId) => {
+    const subscription = getKeywordSubscription(subscriptionId);
+    const sourceProfileIds = resolveSubscriptionScopedSourceProfileIds(
+      sourceSelection.sourceProfileIds,
+      subscriptionId,
+    );
+    return {
+      subscriptionId,
+      label: subscription?.label || subscriptionId,
+      keywords: (subscription?.keywords || []).slice(0, 4),
+      sourceProfileIds,
+      sourceLabels: sourceProfileIds
+        .map((sourceProfileId) => getSignalSourceProfile(sourceProfileId)?.label || sourceProfileId)
+        .filter(Boolean),
+    };
+  });
 }
 
 export function getScreeningOpportunityTypeSelection(): {
@@ -617,6 +1067,10 @@ export function getScreeningExtraKeywords(): string[] {
   );
 }
 
+function assembleQuery(parts: string[]): string {
+  return unique(parts.filter(Boolean)).join(" ");
+}
+
 // 合并多个信号源预设。
 // 这个函数的作用是把多个 profile 的搜索范围、文档类型和域名白名单聚合到一起。
 export function mergeSourceProfiles(profileIds: string[]): {
@@ -668,44 +1122,98 @@ export function buildSearchQuery(input: {
   extraKeywords?: string[];
 }): {
   finalQuery: string;
+  alternativeQueries: string[];
   resolvedProfileIds: string[];
   documentTypes: string[];
   subscriptionLabel: string | null;
   queryHints: string[];
 } {
-  const sourceProfiles = mergeSourceProfiles(input.sourceProfileIds || []);
+  const scopedSourceProfileIds = resolveSubscriptionScopedSourceProfileIds(
+    input.sourceProfileIds || [],
+    input.subscriptionId,
+    input.baseQuery,
+  );
+  const sourceProfiles = mergeSourceProfiles(scopedSourceProfileIds);
   const subscription = input.subscriptionId
     ? getKeywordSubscription(input.subscriptionId)
     : undefined;
   const normalizedBaseQuery = normalizeQueryText(input.baseQuery);
+  const normalizedCoreQuery =
+    normalizeBaseQueryForProfiles(
+      normalizedBaseQuery,
+      sourceProfiles.resolvedProfileIds,
+    ) || normalizedBaseQuery;
   const selectedSubscriptionBoostTerms = pickSubscriptionBoostTerms(
-    normalizedBaseQuery,
+    normalizedCoreQuery,
     input.subscriptionId,
     sourceProfiles.resolvedProfileIds,
   );
+  const selectedSubscriptionKeywordTerms = pickSubscriptionKeywordTerms(
+    normalizedCoreQuery,
+    input.subscriptionId,
+  );
   const selectedSourceIntentTerms = pickSourceIntentTerms(
-    normalizedBaseQuery,
+    normalizedCoreQuery,
     sourceProfiles.resolvedProfileIds,
+    input.subscriptionId,
   );
   const selectedExtraKeywords = pickExtraIntentTerms(
-    normalizedBaseQuery,
+    normalizedCoreQuery,
     input.extraKeywords || [],
+  );
+  const fallbackSubscriptionKeywordTerms = pickSubscriptionKeywordTerms(
+    normalizedCoreQuery,
+    input.subscriptionId,
+    2,
+    2,
+  );
+  const fallbackSourceIntentTerms = pickSourceIntentTerms(
+    normalizedCoreQuery,
+    sourceProfiles.resolvedProfileIds,
+    input.subscriptionId,
+    2,
+    2,
   );
   const selectedSearchScopes = shouldUseGovernmentSiteScope(
     sourceProfiles.resolvedProfileIds,
   )
     ? ["site:.gov.cn"]
     : [];
-  const parts = [
-    normalizedBaseQuery,
+  const primaryQuery = assembleQuery([
+    normalizedCoreQuery,
     ...selectedSubscriptionBoostTerms,
+    ...selectedSubscriptionKeywordTerms,
     ...selectedSourceIntentTerms,
     ...selectedExtraKeywords,
     ...selectedSearchScopes,
-  ].filter(Boolean);
+  ]);
+  const fallbackQuery = assembleQuery([
+    normalizedCoreQuery,
+    ...selectedSubscriptionBoostTerms,
+    ...(fallbackSubscriptionKeywordTerms.length > 0
+      ? fallbackSubscriptionKeywordTerms
+      : selectedSubscriptionKeywordTerms.slice(0, 1)),
+    ...(fallbackSourceIntentTerms.length > 0
+      ? fallbackSourceIntentTerms
+      : selectedSourceIntentTerms.slice(0, 1)),
+    ...selectedSearchScopes,
+  ]);
+  const compactFallbackQuery = assembleQuery([
+    normalizedCoreQuery,
+    ...selectedSubscriptionBoostTerms.slice(0, 1),
+    ...selectedSubscriptionKeywordTerms.slice(0, 1),
+    ...selectedSourceIntentTerms.slice(0, 1),
+    ...selectedSearchScopes,
+  ]);
+  const alternativeQueries = unique(
+    [fallbackQuery, compactFallbackQuery].filter(
+      (item) => !!item && item !== primaryQuery,
+    ),
+  );
 
   return {
-    finalQuery: unique(parts).join(" "),
+    finalQuery: primaryQuery,
+    alternativeQueries,
     resolvedProfileIds: sourceProfiles.resolvedProfileIds,
     // 把文档类型一并返回，方便调用方知道当前预设的“内容意图”。
     documentTypes: sourceProfiles.documentTypes,

@@ -102,7 +102,7 @@
 }
 
 .hero-card--metrics {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
 
 .hero-card__stats,
@@ -143,6 +143,14 @@
 .hero-metric--dense {
   min-height: 132px;
   align-content: center;
+}
+
+.hero-metric--primary {
+  background:
+    linear-gradient(135deg, rgba(196, 83, 42, 0.2), rgba(255, 244, 232, 0.9)),
+    rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(196, 83, 42, 0.18);
+  box-shadow: 0 16px 36px rgba(196, 83, 42, 0.08);
 }
 
 .hero-metric span,
@@ -707,6 +715,10 @@
   align-items: start;
 }
 
+.agent-management-panel {
+  grid-column: 1 / -1;
+}
+
 .agent-grid--bottom {
   align-items: start;
 }
@@ -849,6 +861,12 @@
   gap: 12px;
 }
 
+.option-grid--modal {
+  max-height: 52vh;
+  overflow: auto;
+  padding-right: 4px;
+}
+
 .option-card {
   display: flex;
   align-items: flex-start;
@@ -878,6 +896,38 @@
 .option-card small {
   display: block;
   margin: 4px 0 0;
+}
+
+.selection-summary-card {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  border-radius: 22px;
+  background: rgba(22, 32, 24, 0.03);
+  border: 1px solid rgba(22, 32, 24, 0.06);
+}
+
+.selection-summary-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.selection-summary-card__header strong {
+  color: var(--text-primary);
+}
+
+.selection-summary-card__header span,
+.selection-summary-card p,
+.selection-summary-card small {
+  color: var(--text-secondary);
+}
+
+.selection-summary-card p,
+.selection-summary-card small {
+  margin: 0;
+  line-height: 1.7;
 }
 
 .config-item {
@@ -1020,6 +1070,16 @@
   border: 1px solid rgba(22, 32, 24, 0.06);
 }
 
+.management-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.management-overview-grid--panels {
+  align-items: start;
+}
+
 .scope-summary__header,
 .summary-section__header,
 .modal-panel__header,
@@ -1029,6 +1089,13 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+}
+
+.summary-section__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
 }
 
 .scope-summary__grid {
@@ -1044,6 +1111,11 @@
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.72);
   border: 1px solid rgba(22, 32, 24, 0.06);
+}
+
+.summary-card small {
+  color: var(--text-secondary);
+  line-height: 1.6;
 }
 
 .config-hub,
@@ -1276,6 +1348,7 @@
   .lead-grid,
   .task-grid,
   .insight-grid,
+  .management-overview-grid,
   .config-grid,
   .analysis-grid,
   .option-grid,
@@ -1308,6 +1381,8 @@
   .config-item,
   .scope-summary__header,
   .summary-section__header,
+  .summary-section__actions,
+  .selection-summary-card__header,
   .modal-panel__header,
   .modal-panel__footer,
   .task-card-compact__top,
